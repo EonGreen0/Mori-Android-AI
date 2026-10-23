@@ -39,6 +39,13 @@ jobs:
       - name: Install dependencies
         run: npm ci --no-audit --no-fund
 
+      - name: Install Playwright Chromium
+        run: npx playwright-core install --with-deps chromium
+
+      - name: Configure Playwright browser
+        run: |
+          node -e "const { chromium } = require('playwright-core'); const fs = require('fs'); fs.writeFileSync(process.env.GITHUB_ENV, 'MORI_CHROME_PATH=' + chromium.executablePath() + '\n', { flag: 'a' });"
+
       - name: Run tests
         run: npm test
 
