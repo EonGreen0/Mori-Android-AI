@@ -3264,6 +3264,26 @@ export function getPlannerAiImages() {
     }));
 }
 
+export function ensureEditablePlannerCopy() {
+  if (!board.readOnly) return false;
+  const clone = normalizeStoredBoard(structuredClone(board), {
+    projectId: id("project"),
+    readOnly: false,
+  });
+  if (!clone) throw new Error("当前策划无法复制");
+  clone.projectId = id("project");
+  clone.projectTitle = `${board.projectTitle || t("planner-default-project-title")} · AI`;
+  clone.readOnly = false;
+  clone.localPackage = true;
+  const index = loadPlannerIndex();
+  activatePlannerBoard(clone, activePlannerAlbumId);
+  registerPlannerProject(index, clone, activePlannerAlbumId);
+  savePlannerIndex(index);
+  localStorage.setItem(plannerBoardStorageKey(clone.projectId), JSON.stringify(clone));
+  renderPlanner({ full: true });
+  return true;
+}
+
 export function applyAiPlannerPlan(plan = []) {
   if (board.readOnly) throw new Error("当前策划为只读，不能应用 AI 排版");
   const imageIds = new Set(getPlannerAiImages().map(image => image.id));
@@ -4114,9 +4134,9 @@ export function switchPlannerMode(mode) {
   document.getElementById("plannerMobileAddTextBtn")?.classList.toggle("hidden", !mobileEdit && !androidLimitedWriteEnabled);
   document.getElementById("plannerMobileAddGroupBtn")?.classList.toggle("hidden", !mobileEdit);
   document.getElementById("plannerMobileClearBtn")?.classList.toggle("hidden", !mobileEdit);
-  document.getElementById("plannerMobileAiLayoutBtn")?.classList.toggle("hidden", !mobileEdit);
+  document.getElementById("plannerMobileAiLayoutBtn")?.classList.toggle("hidden", !planner);
   const desktopAiButton = document.getElementById("plannerAiLayoutBtn");
-  if (desktopAiButton) desktopAiButton.disabled = board.readOnly;
+  if (desktopAiButton) desktopAiButton.disabled = false;
   viewport?.classList.toggle("hidden", !planner);
   libraryToolbar?.classList.toggle("hidden", planner);
   libraryViewport?.classList.toggle("hidden", planner);

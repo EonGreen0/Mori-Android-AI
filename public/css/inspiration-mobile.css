@@ -227,6 +227,59 @@ html.is-android #inspirationPage[data-album-view="canvas"] .inspiration-card > i
 #albumPreviewSource { display: flex; align-items: center; justify-content: center; gap: 8px; width: 100%; min-height: 40px; border: 0; background: none; color: inherit; font: inherit; font-size: 13px; }
 #albumPreviewSource:disabled { display: none; }
 .album-mobile-dialog.hidden, .album-photo-preview.hidden { display: none; }
+.album-edit-overlay {
+  z-index: 2550;
+  align-items: flex-end;
+  padding: 14px 12px max(14px, env(safe-area-inset-bottom, 0px));
+}
+.album-edit-sheet {
+  width: min(460px, 100%);
+  padding: 16px;
+  border-radius: 20px;
+  background: var(--bg-color);
+  box-shadow: 0 20px 60px rgba(0, 0, 0, .34);
+}
+.album-edit-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 12px; }
+.album-edit-heading span { color: var(--text-secondary); font-size: 11px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
+.album-edit-heading h3 { margin: 3px 0 0; font-size: 19px; overflow-wrap: anywhere; }
+.album-edit-close { font-size: 22px; }
+.album-edit-action {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  width: 100%;
+  margin-top: 8px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--primary) 13%, transparent);
+  border-radius: 11px;
+  background: var(--surface);
+  color: var(--text-main);
+  text-align: left;
+  font: inherit;
+}
+.album-edit-action strong { font-size: 14px; }
+.album-edit-action span { color: var(--text-secondary); font-size: 12px; line-height: 1.45; }
+.album-edit-action.danger { color: #b42318; border-color: color-mix(in srgb, #b42318 34%, transparent); }
+.album-edit-action:disabled { opacity: .45; }
+.album-edit-merge {
+  display: grid;
+  gap: 8px;
+  margin-top: 8px;
+  padding: 12px;
+  border-radius: 11px;
+  background: color-mix(in srgb, var(--primary) 6%, transparent);
+}
+.album-edit-merge.hidden { display: none; }
+.album-edit-merge label { font-size: 12px; color: var(--text-secondary); }
+.album-edit-merge select,
+.album-edit-merge button {
+  min-height: 40px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  border-radius: 9px;
+  background: var(--bg-color);
+  color: var(--text-main);
+  font: inherit;
+}
 @media (max-width: 350px) {
   .album-mobile-navigation { gap: 8px; padding: 0 12px; }
   #albumMobileModes .inspiration-mode-switch { gap: 16px; }

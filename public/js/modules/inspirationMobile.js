@@ -224,11 +224,13 @@ export function handleMobileInspirationBack() {
 }
 
 export function renderMobileInspiration({
-  albums, active, getGroups, loadImage, openSource, aiCategories = [], aiFilter = "all", selectAiCategory = () => {},
+  albums, active, getGroups, loadImage, openSource, aiCategories = [], aiFilter = "all",
+  selectAiCategory = () => {}, editAlbum = () => {},
 }) {
   if (!isMobileInspiration() || !mounted) return;
   callbacks.loadImage = loadImage;
   callbacks.openSource = openSource;
+  callbacks.editAlbum = editAlbum;
   const page = document.getElementById("inspirationPage");
   page.dataset.mobileScreen = overview ? "overview" : "detail";
   page.dataset.albumView = view;
@@ -305,7 +307,41 @@ export function renderMobileInspiration({
     const meta = document.createElement("span");
     meta.textContent = `${t("album-photo-count", { count })}${album.plannerProjectId ? ` · ${t("album-has-plan")}` : ""}`;
     card.append(cover, title, meta);
-    card.addEventListener("click", () => {
+    let longPressTimer = null;
+    let longPressTriggered = false;
+    let startPoint = null;
+    const cancelLongPress = () => {
+      if (longPressTimer) clearTimeout(longPressTimer);
+      longPressTimer = null;
+      startPoint = null;
+    };
+    card.addEventListener("pointerdown", event => {
+      if (event.pointerType !== "touch" || event.button !== 0) return;
+      longPressTriggered = false;
+      startPoint = { x: event.clientX, y: event.clientY };
+      longPressTimer = setTimeout(() => {
+        longPressTriggered = true;
+        longPressTimer = null;
+        try { navigator.vibrate?.(18); } catch (_) {}
+        callbacks.editAlbum(album);
+      }, 520);
+    });
+    card.addEventListener("pointermove", event => {
+      if (!startPoint) return;
+      if (Math.hypot(event.clientX - startPoint.x, event.clientY - startPoint.y) > 10) {
+        cancelLongPress();
+      }
+    });
+    ["pointerup", "pointercancel", "pointerleave"].forEach(type =>
+      card.addEventListener(type, cancelLongPress));
+    card.addEventListener("contextmenu", event => event.preventDefault());
+    card.addEventListener("click", event => {
+      if (longPressTriggered) {
+        longPressTriggered = false;
+        event.preventDefault();
+        event.stopPropagation();
+        return;
+      }
       try { localStorage.setItem("mori_mobile_album_recent", JSON.stringify([album.id, ...recent.filter(id => id !== album.id)].slice(0, 50))); } catch (_) {}
       callbacks.selectAlbum(album.id);
     });

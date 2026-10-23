@@ -159,6 +159,18 @@ try {
     mkdirSync(process.env.MORI_QA_DIR, { recursive: true });
     await page.screenshot({ path: path.join(process.env.MORI_QA_DIR, "android-ai-planner.png"), fullPage: false });
   }
+  const copiedPlan = await page.evaluate(async () => {
+    const planner = await import("/js/modules/planner.js");
+    await planner.prepareAndroidReadOnlyPlannerProject({
+      projectId: "cloud-readonly-plan",
+      title: "云端只读策划",
+      albumId: "flower",
+    });
+    planner.ensureEditablePlannerCopy();
+    return planner.getPlannerManualSyncState();
+  });
+  assert.notEqual(copiedPlan.projectId, "cloud-readonly-plan");
+  assert.equal(copiedPlan.readOnly, false, "AI planning must create an editable copy from a read-only plan");
   assert.deepEqual(errors, []);
   console.log("PASS: mobile plan zoom controls, editable local planning, AI image analysis and executable pose-group layout");
   await context.close();

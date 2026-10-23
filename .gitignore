@@ -95,6 +95,7 @@ src-scrapers/
 !/scripts/test-browser.mjs
 !/scripts/dev-server.mjs
 !/scripts/verify-gallery-import.mjs
+!/scripts/verify-album-edit.mjs
 !/scripts/verify-link-album-assignment.mjs
 !/scripts/verify-ai-organizer.mjs
 !/scripts/verify-android-local-planner.mjs

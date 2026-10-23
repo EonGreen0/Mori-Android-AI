@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.9.4 — 2026-10-23
+
+- Add long-press album management with rename, merge and delete.
+- Preserve downloaded history and original images when deleting an album grouping.
+- Make AI Plan feedback explicit when no images or AI configuration is available.
+- Automatically copy a read-only Planner to an editable local copy before AI layout.
+- Add tests for album long-press editing and read-only AI Planner copying.
+
 ## 4.9.3 — 2026-10-23
 
 - Restrict AI analysis sheet closing to dragging the white top handle.

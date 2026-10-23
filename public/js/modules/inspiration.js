@@ -1278,6 +1278,174 @@ export function applyAiAlbumPlan(plan) {
   return { albums: applied, albumNames: applied.map(album => album.name) };
 }
 
+const PLANNER_INDEX_KEY = "mori_planner_projects_v2";
+
+function loadPlannerAlbumIndex() {
+  try {
+    const value = JSON.parse(localStorage.getItem(PLANNER_INDEX_KEY) || "null");
+    return value && typeof value === "object" && !Array.isArray(value) ? value : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function refreshPlannerAlbumIndex(index, sourceId, targetId = "") {
+  if (!index?.activeProjectByAlbum || !index?.projects) return;
+  const sourceProjectId = String(index.activeProjectByAlbum[sourceId] || "");
+  const targetProjectId = String(index.activeProjectByAlbum[targetId] || "");
+  if (targetId && sourceProjectId && targetProjectId && sourceProjectId !== targetProjectId) {
+    throw new Error("两个相册都已有独立策划，无法直接合并相册");
+  }
+  if (targetId && sourceProjectId && !targetProjectId) {
+    index.activeProjectByAlbum[targetId] = sourceProjectId;
+  }
+  delete index.activeProjectByAlbum[sourceId];
+  const projectId = sourceProjectId || targetProjectId;
+  const project = projectId ? index.projects[projectId] : null;
+  if (project) {
+    const albumIds = [...new Set((Array.isArray(project.albumIds) ? project.albumIds : [])
+      .filter(id => id !== sourceId))];
+    if (targetId && !albumIds.includes(targetId)) albumIds.push(targetId);
+    project.albumIds = albumIds;
+  }
+  localStorage.setItem(PLANNER_INDEX_KEY, JSON.stringify(index));
+}
+
+export function renameInspirationAlbum(albumId, nextName) {
+  const name = String(nextName || "").trim().slice(0, 48);
+  if (!name) throw new Error("请输入相册名称");
+  const albums = loadAlbums().filter(album => !album.synced);
+  const album = albums.find(item => item.id === albumId);
+  if (!album) throw new Error("该相册不可编辑");
+  if (albums.some(item => item.id !== albumId && item.name.toLocaleLowerCase() === name.toLocaleLowerCase())) {
+    throw new Error("已经有同名相册");
+  }
+  album.name = name;
+  saveAlbums(albums);
+  renderInspiration();
+  return album;
+}
+
+export function deleteInspirationAlbum(albumId) {
+  const albums = loadAlbums().filter(album => !album.synced);
+  const album = albums.find(item => item.id === albumId);
+  if (!album) throw new Error("该相册不可删除");
+  const assignments = loadAssignments();
+  for (const [key, ids] of Object.entries(assignments)) {
+    const next = (Array.isArray(ids) ? ids : []).filter(id => id !== albumId);
+    if (next.length) assignments[key] = next;
+    else delete assignments[key];
+  }
+  saveAssignments(assignments);
+  saveAlbums(albums.filter(item => item.id !== albumId));
+  const plannerIndex = loadPlannerAlbumIndex();
+  if (plannerIndex) refreshPlannerAlbumIndex(plannerIndex, albumId);
+  if (activeAlbumId === albumId) activeAlbumId = "all";
+  renderInspiration();
+  return album;
+}
+
+export function mergeInspirationAlbums(sourceId, targetId) {
+  if (!sourceId || !targetId || sourceId === targetId) throw new Error("请选择不同的目标相册");
+  const albums = loadAlbums().filter(album => !album.synced);
+  const source = albums.find(album => album.id === sourceId);
+  const target = albums.find(album => album.id === targetId);
+  if (!source || !target) throw new Error("相册不存在或不可编辑");
+  const plannerIndex = loadPlannerAlbumIndex();
+  if (plannerIndex) refreshPlannerAlbumIndex(plannerIndex, sourceId, targetId);
+  const assignments = loadAssignments();
+  for (const [key, ids] of Object.entries(assignments)) {
+    const current = Array.isArray(ids) ? ids : [];
+    if (!current.includes(sourceId)) continue;
+    assignments[key] = [...new Set(current.filter(id => id !== sourceId).concat(targetId))];
+  }
+  saveAssignments(assignments);
+  saveAlbums(albums.filter(album => album.id !== sourceId));
+  activeAlbumId = targetId;
+  renderInspiration();
+  return { source, target };
+}
+
+export function openAlbumEditor(album) {
+  if (!album || album.synced || album.localPackage) {
+    showToast(t("album-edit-readonly"));
+    return;
+  }
+  document.getElementById("albumMobileMenu")?.classList.add("hidden");
+  const overlay = document.createElement("div");
+  overlay.id = "albumEditOverlay";
+  overlay.className = "modal-overlay album-edit-overlay";
+  overlay.setAttribute("role", "dialog");
+  overlay.setAttribute("aria-modal", "true");
+  overlay.setAttribute("aria-labelledby", "albumEditTitle");
+  const targetAlbums = getManualAlbumTargets().filter(candidate => candidate.id !== album.id);
+  overlay.innerHTML = `<div class="album-edit-sheet">
+    <div class="album-edit-heading">
+      <div><span>${escapeHtml(t("album-edit-label"))}</span><h3 id="albumEditTitle">${escapeHtml(album.name)}</h3></div>
+      <button type="button" class="album-icon-button album-edit-close" data-action="close" aria-label="${escapeHtml(t("album-close"))}">×</button>
+    </div>
+    <button type="button" class="album-edit-action" data-action="rename"><strong>${escapeHtml(t("album-edit-rename"))}</strong><span>${escapeHtml(t("album-edit-rename-hint"))}</span></button>
+    <button type="button" class="album-edit-action" data-action="merge" ${targetAlbums.length ? "" : "disabled"}><strong>${escapeHtml(t("album-edit-merge"))}</strong><span>${escapeHtml(targetAlbums.length ? t("album-edit-merge-hint") : t("album-edit-no-target"))}</span></button>
+    <div class="album-edit-merge hidden">
+      <label for="albumMergeTarget">${escapeHtml(t("album-edit-merge-into"))}</label>
+      <select id="albumMergeTarget">${targetAlbums.map(target => `<option value="${escapeHtml(target.id)}">${escapeHtml(target.name)}</option>`).join("")}</select>
+      <button type="button" data-action="merge-confirm">${escapeHtml(t("album-edit-merge-confirm"))}</button>
+    </div>
+    <button type="button" class="album-edit-action danger" data-action="delete"><strong>${escapeHtml(t("album-edit-delete"))}</strong><span>${escapeHtml(t("album-edit-delete-hint"))}</span></button>
+  </div>`;
+  document.body.appendChild(overlay);
+  const close = () => overlay.remove();
+  overlay.addEventListener("click", event => {
+    if (event.target === overlay) close();
+  });
+  overlay.querySelectorAll('[data-action="close"]').forEach(button => button.addEventListener("click", close));
+  overlay.querySelector('[data-action="rename"]')?.addEventListener("click", () => {
+    close();
+    showConfirm(
+      t("album-edit-rename"),
+      `<div class="inspiration-album-dialog"><label>${escapeHtml(t("inspiration-album-name"))}</label><input id="inspirationAlbumNameInput" type="text" maxlength="48" autocomplete="off" value="${escapeHtml(album.name)}" /></div>`,
+      () => {
+        try {
+          const nextName = document.getElementById("inspirationAlbumNameInput")?.value || "";
+          const renamed = renameInspirationAlbum(album.id, nextName);
+          showToast(t("album-edit-renamed", { name: renamed.name }));
+        } catch (error) {
+          showToast(String(error?.message || error));
+        }
+      },
+    );
+    setTimeout(() => document.getElementById("inspirationAlbumNameInput")?.focus(), 60);
+  });
+  overlay.querySelector('[data-action="merge"]')?.addEventListener("click", () => {
+    overlay.querySelector(".album-edit-merge")?.classList.remove("hidden");
+  });
+  overlay.querySelector('[data-action="merge-confirm"]')?.addEventListener("click", () => {
+    const targetId = overlay.querySelector("#albumMergeTarget")?.value || "";
+    try {
+      const result = mergeInspirationAlbums(album.id, targetId);
+      close();
+      showToast(t("album-edit-merged", { source: result.source.name, target: result.target.name }));
+    } catch (error) {
+      showToast(String(error?.message || error));
+    }
+  });
+  overlay.querySelector('[data-action="delete"]')?.addEventListener("click", () => {
+    close();
+    showConfirm(
+      t("album-edit-delete"),
+      t("album-edit-delete-confirm", { name: album.name }),
+      () => {
+        try {
+          deleteInspirationAlbum(album.id);
+          showToast(t("album-edit-deleted", { name: album.name }));
+        } catch (error) {
+          showToast(String(error?.message || error));
+        }
+      },
+    );
+  });
+}
+
 function promptNewAlbum(onCreated) {
   showConfirm(
     t("inspiration-new-album"),
@@ -1755,6 +1923,7 @@ export function renderInspiration() {
     openSource,
     aiCategories,
     aiFilter: aiPoseFilter,
+    editAlbum: openAlbumEditor,
     selectAiCategory: category => {
       aiPoseFilter = category;
       renderInspiration();

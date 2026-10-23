@@ -1,8 +1,9 @@
 import { t } from "../i18n/index.js";
+import { showToast } from "../utils/index.js";
 import { showConfirm } from "./modals.js";
 import { getAiAnalysisForFile } from "./inspiration.js";
 import { ensureAiImageAnalysis } from "./aiOrganizer.js";
-import { applyAiPlannerPlan, getPlannerAiImages } from "./planner.js";
+import { applyAiPlannerPlan, ensureEditablePlannerCopy, getPlannerAiImages } from "./planner.js";
 
 let running = false;
 let bound = false;
@@ -28,9 +29,18 @@ function poseName(code) {
 
 async function runAiPlannerLayout() {
   if (running) return;
+  try {
+    if (ensureEditablePlannerCopy()) {
+      showToast(t("ai-planner-copy-created"));
+    }
+  } catch (error) {
+    showToast(String(error?.message || error));
+    return;
+  }
   const images = getPlannerAiImages();
   if (!images.length) {
     setBusy(false, t("ai-planner-no-images"));
+    showToast(t("ai-planner-no-images"));
     return;
   }
   running = true;
@@ -70,7 +80,9 @@ async function runAiPlannerLayout() {
       }
     }, () => setBusy(false, ""));
   } catch (error) {
-    setBusy(false, `${t("ai-planner-failed")}：${String(error?.message || error)}`);
+    const message = `${t("ai-planner-failed")}：${String(error?.message || error)}`;
+    setBusy(false, message);
+    showToast(message);
   }
 }
 
