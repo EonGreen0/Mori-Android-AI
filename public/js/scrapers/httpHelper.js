@@ -1,0 +1,344 @@
+import { CapacitorHttp, getUserAgent } from "../utils/index.js";
+
+/**
+ * Gets the configured HTTP request timeout limit in milliseconds.
+ * Defaults to 30000ms (30s) if unset or invalid.
+ * @returns {number} Timeout in milliseconds
+ */
+export function getRequestTimeout() {
+  const customSec = parseInt(localStorage.getItem("mori_request_timeout"), 10);
+  if (!isNaN(customSec) && customSec >= 5 && customSec <= 180) {
+    return customSec * 1000;
+  }
+  return 30000;
+}
+
+/**
+ * Safely parses response data as JSON, detecting HTML error pages (Cloudflare/Rate Limit blocks).
+ * @param {any} data - Raw response data
+ * @param {string} serverName - Server name for error contextualization
+ * @returns {object} Parsed JSON object
+ */
+export function parseJsonResponse(data, serverName = "Server") {
+  if (typeof data === "object" && data !== null) return data;
+  if (typeof data === "string") {
+    const trimmed = data.trim();
+    if (trimmed.startsWith("<") || trimmed.startsWith("<!DOCTYPE")) {
+      throw new Error(
+        `${serverName} returned an HTML error page (blocked or rate-limited). Please try another server or check your network connection.`,
+      );
+    }
+    try {
+      return JSON.parse(trimmed);
+    } catch (e) {
+      throw new Error(`${serverName} returned an invalid response format.`);
+    }
+  }
+  throw new Error(`${serverName} returned an empty response.`);
+}
+
+/**
+ * Centralized HTTP request client wrapping CapacitorHttp.
+ * Injects active User-Agent, handles configurable timeouts, and performs defensive JSON parsing.
+ * @param {object} options - Request options (method, url, headers, data, params, responseType)
+ * @param {string} serverName - Name of the target server for logging and error reporting
+ * @returns {Promise<any>} Response data (parsed if JSON)
+ */
+export async function scraperFetch(options, serverName = "Server") {
+  const method = (
+    options.method || (options.data ? "POST" : "GET")
+  ).toUpperCase();
+  const headers = { ...options.headers };
+
+  if (!headers["User-Agent"] && !headers["user-agent"]) {
+    headers["User-Agent"] = getUserAgent();
+  }
+
+  const isHeaderSpoofing =
+    localStorage.getItem("mori_header_spoofing") !== "false";
+  const isBypassSsl = localStorage.getItem("mori_bypass_ssl") === "true";
+  const isForceIpv4 = localStorage.getItem("mori_force_ipv4") === "true";
+
+  if (isHeaderSpoofing) {
+    try {
+      const parsedUrl = new URL(options.url);
+      if (!headers["Referer"] && !headers["referer"]) {
+        headers["Referer"] = `${parsedUrl.protocol}//${parsedUrl.hostname}/`;
+      }
+    } catch (_) {}
+    if (!headers["Accept"] && !headers["accept"]) {
+      headers["Accept"] =
+        "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8";
+    }
+    if (!headers["Accept-Language"] && !headers["accept-language"]) {
+      headers["Accept-Language"] = "en-US,en;q=0.9,id;q=0.8";
+    }
+    if (!headers["Sec-Fetch-Dest"] && !headers["sec-fetch-dest"]) {
+      headers["Sec-Fetch-Dest"] = "empty";
+    }
+    if (!headers["Sec-Fetch-Mode"] && !headers["sec-fetch-mode"]) {
+      headers["Sec-Fetch-Mode"] = "cors";
+    }
+  }
+
+  const dohMode = localStorage.getItem("mori_doh") || "off";
+
+  if (dohMode !== "off") {
+    try {
+      const parsedUrl = new URL(options.url);
+      const hostname = parsedUrl.hostname;
+      if (
+        !/^\d+\.\d+\.\d+\.\d+$/.test(hostname) &&
+        parsedUrl.protocol === "https:"
+      ) {
+        const dohEndpoint =
+          dohMode === "google"
+            ? `https://dns.google/resolve?name=${hostname}&type=A`
+            : `https://cloudflare-dns.com/dns-query?name=${hostname}&type=A`;
+        fetch(dohEndpoint, {
+          headers: { Accept: "application/dns-json" },
+          signal: AbortSignal.timeout(2000),
+        }).catch(() => {});
+      }
+    } catch (_) {}
+  }
+
+  const httpConfig = {
+    url: options.url,
+    headers: headers,
+    connectTimeout: getRequestTimeout(),
+    readTimeout: getRequestTimeout(),
+  };
+
+  if (isBypassSsl) {
+    httpConfig.disableSSLValidation = true;
+  }
+  if (isForceIpv4) {
+    httpConfig.ipv4Only = true;
+  }
+
+  if (options.data !== undefined) httpConfig.data = options.data;
+  if (options.params !== undefined) httpConfig.params = options.params;
+  if (options.responseType !== undefined)
+    httpConfig.responseType = options.responseType;
+
+  let response;
+  const invoke =
+    window.__TAURI__?.core?.invoke ||
+    window.__TAURI_INTERNALS__?.invoke ||
+    window.__TAURI__?.invoke;
+
+  const nativeBridge = window.MoriMainBridge || window.MoriShareBridge;
+  const capHttp = window.Capacitor?.Plugins?.CapacitorHttp || CapacitorHttp;
+
+  if (nativeBridge?.httpRequestAsync) {
+    let fetchUrl = options.url;
+    if (options.params) {
+      const q = new URLSearchParams(options.params).toString();
+      if (q) fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + q;
+    }
+    const bridgeOpts = {
+      url: fetchUrl,
+      method,
+      headers,
+      responseType: options.responseType,
+    };
+    if (options.data !== undefined)
+      bridgeOpts.data =
+        typeof options.data === "object"
+          ? JSON.stringify(options.data)
+          : String(options.data);
+
+    const reqId =
+      "req_" + Math.random().toString(36).substring(2, 11) + "_" + Date.now();
+    const raw = await new Promise((resolve, reject) => {
+      if (!window.__moriNativeCallbacks) window.__moriNativeCallbacks = {};
+      const timeoutMs = getRequestTimeout();
+      const timer = setTimeout(() => {
+        delete window.__moriNativeCallbacks[reqId];
+        if (window.__moriShareCallbacks)
+          delete window.__moriShareCallbacks[reqId];
+        reject(
+          new Error(
+            `${serverName} request timed out after ${timeoutMs / 1000}s`,
+          ),
+        );
+      }, timeoutMs + 2000);
+
+      window.__moriNativeCallbacks[reqId] = (val) => {
+        clearTimeout(timer);
+        resolve(val);
+      };
+      if (!window.__moriShareCallbacks)
+        window.__moriShareCallbacks = window.__moriNativeCallbacks;
+      nativeBridge.httpRequestAsync(JSON.stringify(bridgeOpts), reqId);
+    });
+    const parsed = JSON.parse(raw);
+    if (parsed.status === 0 && parsed.error) {
+      throw new Error(`${serverName} request failed: ${parsed.error}`);
+    }
+    response = {
+      status: parsed.status,
+      headers: parsed.headers || {},
+      data: parsed.data,
+      url: parsed.url || options.url,
+    };
+  } else if (nativeBridge?.httpRequest) {
+    let fetchUrl = options.url;
+    if (options.params) {
+      const q = new URLSearchParams(options.params).toString();
+      if (q) fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + q;
+    }
+    const bridgeOpts = {
+      url: fetchUrl,
+      method,
+      headers,
+      responseType: options.responseType,
+    };
+    if (options.data !== undefined)
+      bridgeOpts.data =
+        typeof options.data === "object"
+          ? JSON.stringify(options.data)
+          : String(options.data);
+    const raw = nativeBridge.httpRequest(JSON.stringify(bridgeOpts));
+    const parsed = JSON.parse(raw);
+    if (parsed.status === 0 && parsed.error) {
+      throw new Error(`${serverName} request failed: ${parsed.error}`);
+    }
+    response = {
+      status: parsed.status,
+      headers: parsed.headers || {},
+      data: parsed.data,
+      url: parsed.url || options.url,
+    };
+  } else if (capHttp) {
+    if (method === "POST") {
+      response = await capHttp.post(httpConfig);
+    } else if (method === "PUT") {
+      response = await capHttp.put(httpConfig);
+    } else if (method === "DELETE") {
+      response = await capHttp.delete(httpConfig);
+    } else {
+      response = await capHttp.get(httpConfig);
+    }
+    if (response && !response.url) response.url = options.url;
+  } else if (invoke) {
+    // Native Rust reqwest for Tauri Desktop (100% CORS-free)
+    let fetchUrl = options.url;
+    if (options.params) {
+      const q = new URLSearchParams(options.params).toString();
+      if (q) fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + q;
+    }
+
+    let bodyString = undefined;
+    if (options.data !== undefined) {
+      if (
+        typeof options.data === "object" &&
+        !(options.data instanceof FormData) &&
+        !(options.data instanceof URLSearchParams)
+      ) {
+        if (
+          headers["Content-Type"]?.includes("application/x-www-form-urlencoded")
+        ) {
+          bodyString = new URLSearchParams(options.data).toString();
+        } else {
+          bodyString = JSON.stringify(options.data);
+          if (!headers["Content-Type"])
+            headers["Content-Type"] = "application/json";
+        }
+      } else {
+        bodyString = String(options.data);
+      }
+    }
+
+    response = await invoke("tauri_http_request", {
+      url: fetchUrl,
+      method: method,
+      headers: headers,
+      body: bodyString,
+    });
+    if (response && !response.url) response.url = fetchUrl;
+  } else {
+    // Standard browser fetch fallback
+    let fetchUrl = options.url;
+    if (options.params) {
+      const q = new URLSearchParams(options.params).toString();
+      if (q) fetchUrl += (fetchUrl.includes("?") ? "&" : "?") + q;
+    }
+
+    let body = undefined;
+    if (options.data !== undefined) {
+      if (
+        typeof options.data === "object" &&
+        !(options.data instanceof FormData) &&
+        !(options.data instanceof URLSearchParams)
+      ) {
+        if (
+          headers["Content-Type"]?.includes("application/x-www-form-urlencoded")
+        ) {
+          body = new URLSearchParams(options.data).toString();
+        } else {
+          body = JSON.stringify(options.data);
+          if (!headers["Content-Type"])
+            headers["Content-Type"] = "application/json";
+        }
+      } else {
+        body = options.data;
+      }
+    }
+
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), getRequestTimeout());
+    const res = await fetch(fetchUrl, {
+      method,
+      headers,
+      body,
+      signal: controller.signal,
+    });
+    clearTimeout(timeoutId);
+
+    const resData =
+      options.responseType === "arraybuffer"
+        ? await res.arrayBuffer()
+        : await res.text();
+    response = {
+      status: res.status,
+      headers: Object.fromEntries(res.headers.entries()),
+      data: resData,
+      url: res.url,
+    };
+  }
+
+  if (options.rawResponse) {
+    return response;
+  }
+
+  if (options.parseJson !== false) {
+    return parseJsonResponse(response.data, serverName);
+  }
+
+  return response.data;
+}
+
+/**
+ * Helper to construct standardized scraper response objects.
+ * @param {boolean} success - Whether the scrape operation succeeded
+ * @param {object|string} payload - Data payload if success, error message if failure
+ * @returns {{status: boolean, result?: object, message?: string}} Standardized response
+ */
+export function createScraperResult(success, payload, statusCode = null) {
+  if (success) {
+    return { status: true, result: payload };
+  }
+  const res = {
+    status: false,
+    message:
+      typeof payload === "string"
+        ? payload
+        : payload?.message || "Scraping failed.",
+  };
+  if (statusCode !== null && statusCode !== undefined) {
+    res.statusCode = statusCode;
+  }
+  return res;
+}

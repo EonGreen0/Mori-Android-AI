@@ -1,0 +1,23 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Mori Planner Shadow Sync</title>
+  <style>
+    body { font: 15px/1.5 system-ui, sans-serif; margin: 24px; color: #222; }
+    button { padding: 10px 16px; margin: 8px 8px 8px 0; cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; background: #f4f4f4; }
+    .warning { color: #9a3500; }
+  </style>
+</head>
+<body>
+  <h1>Planner Shadow Sync（测试）</h1>
+  <p class="warning">第二步会把当前 Planner 的共享字段上传到 Mori 测试 Worker；不会上传原图，也不会把云端结果写回本地 Board。</p>
+  <button id="prepareShadow">① 备份并检查</button>
+  <button id="uploadShadow" disabled>② 手动上传并校验</button>
+  <button id="closeShadow">关闭</button>
+  <pre id="shadowResult">尚未读取 Planner。</pre>
+  <script type="module" src="./js/sync/tauriShadowSyncRuntime.js"></script>
+</body>
+</html>

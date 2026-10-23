@@ -1,0 +1,2048 @@
+// result.js — result section rendering, slider UI, PDF gallery export
+import { translations, t } from "../i18n/index.js";
+import { createVideoPlayer } from "../components/player.js";
+import {
+  truncate,
+  showToast,
+  stopAllMedia,
+  requestWakeLock,
+  releaseWakeLock,
+  playCompletionSound,
+  Filesystem,
+  CapacitorHttp,
+  CHROME_UA,
+} from "../utils/index.js";
+import {
+  currentLang,
+  currentSlideIndex,
+  slideData,
+  setCurrentSlideIndex,
+  setSlideData,
+} from "../modules/core.js";
+import { startNativeDownload } from "./nativeDownload.js";
+import { escapeHtml } from "../ui.js";
+import { showConfirm } from "../modules/modals.js";
+import {
+  assignSourceUrlToAlbum,
+  createAlbumForSourceUrl,
+  getManualAlbumTargets,
+} from "../modules/inspiration.js";
+
+let detachResultSavedListener = null;
+
+function normalizeQuickDownloadPath(value) {
+  const cleaned = String(value || "")
+    .trim()
+    .replace(/\\/g, "/")
+    .replace(/^\/?Download\//i, "")
+    .replace(/^\/+|\/+$/g, "");
+  const parts = cleaned
+    .split("/")
+    .map((part) => part.replace(/[\\:*?"<>|]/g, "").trim())
+    .filter((part) => part && part !== "." && part !== "..");
+  return parts.join("/") || "Mori";
+}
+
+function parentPath(path) {
+  const normalized = String(path || "").replace(/[\\/]+$/g, "");
+  const slashIndex = Math.max(
+    normalized.lastIndexOf("/"),
+    normalized.lastIndexOf("\\"),
+  );
+  return slashIndex > 0 ? normalized.slice(0, slashIndex) : normalized;
+}
+
+async function openDownloadedPath(path, preferFile = true) {
+  if (!path) return false;
+
+  if (preferFile && window.MoriMainBridge?.openFile) {
+    try {
+      if (window.MoriMainBridge.openFile(path)) return true;
+    } catch (_) {}
+  }
+
+  const tauriInvoke =
+    window.__TAURI__?.core?.invoke ||
+    window.__TAURI_INTERNALS__?.invoke ||
+    window.__TAURI__?.invoke;
+  if (!tauriInvoke) return false;
+
+  try {
+    await tauriInvoke("tauri_open_url", { url: path });
+    return true;
+  } catch (err) {
+    console.warn("Could not open downloaded path:", err);
+    return false;
+  }
+}
+
+function createQuickDestinationPanel(downloadList) {
+  const defaultPath = normalizeQuickDownloadPath(
+    localStorage.getItem("mori_download_path") || "Mori",
+  );
+  const currentPath = normalizeQuickDownloadPath(
+    sessionStorage.getItem("mori_quick_download_path") || defaultPath,
+  );
+
+  const panel = document.createElement("div");
+  panel.className = "quick-destination-panel";
+  panel.innerHTML = `
+    <div class="quick-destination-heading">
+      <strong>${escapeHtml(t("quick-folder-title"))}</strong>
+      <span>${escapeHtml(t("quick-folder-hint"))}</span>
+    </div>
+    <div class="quick-destination-row">
+      <span class="quick-destination-prefix">/Download/</span>
+      <input class="quick-destination-input" type="text" value="${escapeHtml(currentPath)}" spellcheck="false" autocomplete="off" />
+    </div>
+    <div class="quick-destination-actions">
+      <button type="button" data-action="default">${escapeHtml(t("quick-folder-default"))}</button>
+      <button type="button" data-action="set-default">${escapeHtml(t("quick-folder-set-default"))}</button>
+    </div>
+  `;
+
+  const input = panel.querySelector(".quick-destination-input");
+  const applyCurrent = (showFeedback = false) => {
+    const path = normalizeQuickDownloadPath(input?.value || defaultPath);
+    if (input) input.value = path;
+    if (path === defaultPath) {
+      sessionStorage.removeItem("mori_quick_download_path");
+    } else {
+      sessionStorage.setItem("mori_quick_download_path", path);
+    }
+    if (showFeedback) showToast(t("quick-folder-updated", { path }));
+    return path;
+  };
+
+  input?.addEventListener("change", () => applyCurrent(true));
+  input?.addEventListener("blur", () => applyCurrent(false));
+  input?.addEventListener("keydown", (event) => {
+    if (event.key === "Enter") {
+      event.preventDefault();
+      input.blur();
+      applyCurrent(true);
+    }
+  });
+
+  panel.querySelector('[data-action="default"]')?.addEventListener("click", () => {
+    sessionStorage.removeItem("mori_quick_download_path");
+    if (input) input.value = defaultPath;
+    showToast(t("quick-folder-updated", { path: defaultPath }));
+  });
+
+  panel
+    .querySelector('[data-action="set-default"]')
+    ?.addEventListener("click", () => {
+      const path = applyCurrent(false);
+      localStorage.setItem("mori_download_path", path);
+      sessionStorage.removeItem("mori_quick_download_path");
+      window.dispatchEvent(
+        new CustomEvent("mori_download_path_changed", { detail: { path } }),
+      );
+      if (input) input.value = path;
+      showToast(t("quick-folder-default-updated"));
+    });
+
+  downloadList?.appendChild(panel);
+  return panel;
+}
+
+function createDownloadFollowup(downloadList) {
+  const bar = document.createElement("div");
+  bar.className = "download-followup hidden";
+  bar.innerHTML = `
+    <div class="download-followup-copy">
+      <strong>${escapeHtml(t("download-saved-to"))}</strong>
+      <span class="download-followup-path"></span>
+    </div>
+    <div class="download-followup-actions">
+      <button type="button" data-action="file">${escapeHtml(t("download-open-file"))}</button>
+      <button type="button" data-action="folder">${escapeHtml(t("download-open-folder"))}</button>
+    </div>
+  `;
+  downloadList?.appendChild(bar);
+  return bar;
+}
+
+function createAlbumAssignmentPanel(downloadList, sourceUrl) {
+  const albums = getManualAlbumTargets();
+  if (!sourceUrl) return null;
+  const panel = document.createElement("div");
+  panel.className = "result-album-assignment";
+  panel.innerHTML = `<div class="result-album-assignment-copy">
+      <strong>${escapeHtml(t("result-add-to-album"))}</strong>
+      <span>${escapeHtml(t("result-add-to-album-hint"))}</span>
+    </div>
+    <div class="result-album-assignment-row">
+      <select aria-label="${escapeHtml(t("result-choose-album"))}">
+        <option value="">${escapeHtml(t("result-choose-album"))}</option>
+        ${albums.map(album => `<option value="${escapeHtml(album.id)}">${escapeHtml(album.name)}</option>`).join("")}
+        <option value="__new">${escapeHtml(t("result-new-album"))}</option>
+      </select>
+      <button type="button">${escapeHtml(t("result-add-to-album-action"))}</button>
+    </div>
+    <p class="result-album-assignment-status" role="status"></p>`;
+  const select = panel.querySelector("select");
+  const button = panel.querySelector("button");
+  const status = panel.querySelector(".result-album-assignment-status");
+  const assign = (albumId, albumName = "") => {
+    const result = assignSourceUrlToAlbum(sourceUrl, albumId);
+    status.textContent = t("result-album-assigned", { album: albumName || result.albumName });
+    status.dataset.state = "ready";
+    showToast(t("result-album-assigned", { album: result.albumName }));
+  };
+  button.addEventListener("click", () => {
+    if (!select.value) {
+      status.textContent = t("result-choose-album");
+      status.dataset.state = "error";
+      return;
+    }
+    if (select.value !== "__new") {
+      assign(select.value);
+      return;
+    }
+    showConfirm(
+      t("result-new-album"),
+      `<div class="inspiration-album-dialog"><label>${escapeHtml(t("inspiration-album-name"))}</label><input id="resultAlbumNameInput" type="text" maxlength="48" autocomplete="off" /></div>`,
+      () => {
+        try {
+          const name = String(document.getElementById("resultAlbumNameInput")?.value || "").trim();
+          const assigned = createAlbumForSourceUrl(name, sourceUrl);
+          status.textContent = t("result-album-assigned", { album: assigned.albumName });
+          status.dataset.state = "ready";
+          showToast(t("result-album-assigned", { album: assigned.albumName }));
+          const option = document.createElement("option");
+          option.value = assigned.albumId;
+          option.textContent = assigned.albumName;
+          select.insertBefore(option, select.querySelector('option[value="__new"]'));
+          select.value = assigned.albumId;
+        } catch (error) {
+          status.textContent = String(error?.message || error);
+          status.dataset.state = "error";
+        }
+      },
+    );
+    setTimeout(() => document.getElementById("resultAlbumNameInput")?.focus(), 60);
+  });
+  downloadList?.appendChild(panel);
+  return panel;
+}
+
+export function renderMediaSlides(container, items, resultThumbnail) {
+  if (!container) return;
+
+  // Cleanup old players before clearing
+  container.querySelectorAll(".mori-player-container").forEach((pc) => {
+    if (pc._cleanup) pc._cleanup();
+  });
+  container.innerHTML = "";
+
+  const isDataSaver = localStorage.getItem("mori_data_saver") === "true";
+
+  items.forEach((dl, index) => {
+    const slide = document.createElement("div");
+    slide.className = `preview-slide ${index === 0 ? "active" : ""}`;
+
+    const rawUrl =
+      typeof dl.url === "string"
+        ? dl.url
+        : dl.url?.url || dl.url?.src || String(dl.url || "");
+    const lowerUrl = rawUrl.toLowerCase();
+    const upperType = dl.type ? dl.type.toUpperCase() : "";
+
+    const isImage =
+      lowerUrl.includes(".jpg") ||
+      lowerUrl.includes(".jpeg") ||
+      lowerUrl.includes(".png") ||
+      lowerUrl.includes(".webp") ||
+      lowerUrl.includes(".gif") ||
+      /\.(jpg|jpeg|png|webp|gif)/i.test(lowerUrl) ||
+      upperType.includes("IMAGE") ||
+      upperType.includes("GIF") ||
+      upperType.includes("PHOTO");
+
+    const isAudio =
+      lowerUrl.endsWith(".mp3") ||
+      lowerUrl.includes(".mp3?") ||
+      lowerUrl.includes(".m4a") ||
+      lowerUrl.includes("audio") ||
+      upperType.includes("MP3") ||
+      upperType.includes("AUDIO");
+
+    const isVideo =
+      !isImage &&
+      !isAudio &&
+      (lowerUrl.includes(".mp4") ||
+        lowerUrl.includes(".m3u8") ||
+        lowerUrl.includes("video") ||
+        upperType.includes("VIDEO") ||
+        upperType.includes("MP4") ||
+        /\d+p/i.test(upperType));
+
+    const isLocal =
+      dl.url.includes("_capacitor_file_") ||
+      dl.url.startsWith("file://") ||
+      dl.url.startsWith("content://");
+
+    if (isVideo) {
+      if (isDataSaver && !isLocal) {
+        const placeholder = document.createElement("div");
+        placeholder.className = "data-saver-placeholder";
+        placeholder.innerHTML = `
+          <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor">
+            <path d="M21 19V5c0-1.1-.9-2-2-2H5c-1.1 0-2 .9-2 2v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2zM8.5 13.5l2.5 3.01L14.5 12l4.5 6H5l3.5-4.5z"/>
+          </svg>
+          <p>${translations[currentLang]["label-datasaver"]}</p>
+        `;
+        placeholder.style.cursor = "pointer";
+        placeholder.onclick = () => {
+          slide.removeChild(placeholder);
+          const playerContainer = createVideoPlayer(dl, index, resultThumbnail);
+          slide.appendChild(playerContainer);
+        };
+        slide.appendChild(placeholder);
+      } else {
+        const playerContainer = createVideoPlayer(dl, index, resultThumbnail);
+        slide.appendChild(playerContainer);
+      }
+    } else if (isAudio) {
+      if (isDataSaver && !isLocal) {
+        const placeholder = document.createElement("div");
+        placeholder.className = "data-saver-placeholder";
+        placeholder.style.cursor = "pointer";
+        placeholder.innerHTML = `<p>${translations[currentLang]["label-datasaver"]}</p>`;
+        placeholder.onclick = () => {
+          slide.removeChild(placeholder);
+          const img = document.createElement("img");
+          img.style.width = "100%";
+          img.style.maxHeight = "300px";
+          img.style.objectFit = "cover";
+          img.style.borderRadius = "8px";
+          img.style.marginBottom = "15px";
+
+          setupImageLoading(
+            img,
+            dl.thumbnail || resultThumbnail || "",
+            resultThumbnail,
+          );
+          slide.appendChild(img);
+        };
+        slide.appendChild(placeholder);
+      } else {
+        const img = document.createElement("img");
+        img.style.width = "100%";
+        img.style.maxHeight = "300px";
+        img.style.objectFit = "cover";
+        img.style.borderRadius = "8px";
+        img.style.marginBottom = "15px";
+
+        setupImageLoading(
+          img,
+          dl.thumbnail || resultThumbnail || "",
+          resultThumbnail,
+        );
+        slide.appendChild(img);
+      }
+
+      const audio = document.createElement("audio");
+      audio.controls = true;
+      audio.style.width = "100%";
+      const autoPlaySetting = localStorage.getItem("mori_autoplay") !== "false";
+      const loopSetting = localStorage.getItem("mori_loop") !== "false";
+      audio.autoplay = false;
+      audio.loop = loopSetting;
+
+      const tauriInvoke =
+        window.__TAURI__?.core?.invoke ||
+        window.__TAURI_INTERNALS__?.invoke ||
+        window.__TAURI__?.invoke;
+
+      let cleanPath = dl.rawUri || dl.rawPath || dl.url || "";
+      if (cleanPath.includes("_capacitor_file_")) {
+        cleanPath = cleanPath.substring(
+          cleanPath.indexOf("_capacitor_file_") + 16,
+        );
+      }
+      if (cleanPath.startsWith("file://")) {
+        cleanPath = cleanPath.replace(/^file:\/\//, "");
+      }
+
+      if (tauriInvoke && isLocal) {
+        const mime = cleanPath.toLowerCase().endsWith(".m4a")
+          ? "audio/mp4"
+          : "audio/mpeg";
+        tauriInvoke("tauri_read_file_bytes", { path: cleanPath })
+          .then((bytes) => {
+            if (audio._isStopped || !audio.isConnected) return;
+            if (bytes && bytes.length > 0) {
+              const blob = new Blob([new Uint8Array(bytes)], { type: mime });
+              const blobUrl = URL.createObjectURL(blob);
+              audio.src = blobUrl;
+              audio.load();
+              if (autoPlaySetting && (index === 0 || slide.classList.contains("active"))) {
+                audio.play().catch(() => {});
+              }
+            } else if (dl.remoteUrl && navigator.onLine) {
+              audio.src = dl.remoteUrl;
+              audio.load();
+              if (autoPlaySetting && (index === 0 || slide.classList.contains("active"))) {
+                audio.play().catch(() => {});
+              }
+            } else {
+              audio.style.display = "none";
+            }
+          })
+          .catch((e) => {
+            if (audio._isStopped || !audio.isConnected) return;
+            console.warn("Tauri audio read error:", e);
+            if (dl.remoteUrl && navigator.onLine) {
+              audio.src = dl.remoteUrl;
+              audio.load();
+              if (autoPlaySetting && (index === 0 || slide.classList.contains("active"))) {
+                audio.play().catch(() => {});
+              }
+            } else {
+              audio.style.display = "none";
+            }
+          });
+      } else {
+        audio.src = dl.url;
+      }
+
+      let audioRetried = false;
+      let audioRemoteRetried = false;
+      audio.onerror = async () => {
+        if (
+          !audioRetried &&
+          (dl.url.includes("_capacitor_file_") ||
+            dl.url.startsWith("file://")) &&
+          window.Capacitor?.isNativePlatform?.() &&
+          Filesystem
+        ) {
+          audioRetried = true;
+          console.warn("Attempting local blob fallback for audio...");
+          try {
+            const rawTarget = dl.rawPath || cleanPath;
+            let relPath = rawTarget
+              .replace(/^.*\/storage\/emulated\/0\//, "")
+              .replace(/^\//, "");
+            try {
+              relPath = decodeURIComponent(relPath);
+            } catch (_) {}
+
+            let res;
+            const dirsToTry = ["EXTERNAL_STORAGE", "DOCUMENTS", "EXTERNAL"];
+            for (const d of dirsToTry) {
+              try {
+                res = await Filesystem.readFile({
+                  path: relPath,
+                  directory: d,
+                });
+                if (res && res.data) break;
+              } catch (_) {}
+            }
+
+            if (!res && dl.rawPath) {
+              let directRaw = dl.rawPath;
+              try {
+                directRaw = decodeURIComponent(directRaw);
+              } catch (_) {}
+              for (const d of dirsToTry) {
+                try {
+                  res = await Filesystem.readFile({
+                    path: directRaw,
+                    directory: d,
+                  });
+                  if (res && res.data) break;
+                } catch (_) {}
+              }
+            }
+
+            if (!res) {
+              let absP = cleanPath;
+              try {
+                absP = decodeURIComponent(absP);
+              } catch (_) {}
+              try {
+                res = await Filesystem.readFile({ path: absP });
+              } catch (_) {}
+            }
+
+            if (res && res.data) {
+              if (audio._isStopped || !audio.isConnected) return;
+              const byteChars = atob(res.data);
+              const byteArr = new Uint8Array(byteChars.length);
+              for (let i = 0; i < byteChars.length; i++) {
+                byteArr[i] = byteChars.charCodeAt(i);
+              }
+              const blob = new Blob([byteArr], { type: "audio/mp3" });
+              audio.src = URL.createObjectURL(blob);
+              audio.load();
+              if (autoPlaySetting && (index === 0 || slide.classList.contains("active"))) {
+                audio.play().catch(() => {});
+              }
+              return;
+            }
+          } catch (e) {
+            console.warn("Audio blob fallback failed:", e);
+          }
+        }
+
+        if (
+          !audioRemoteRetried &&
+          dl.remoteUrl &&
+          audio.src !== dl.remoteUrl &&
+          navigator.onLine
+        ) {
+          if (audio._isStopped || !audio.isConnected) return;
+          audioRemoteRetried = true;
+          audio.src = dl.remoteUrl;
+          audio.load();
+          return;
+        }
+
+        audio.style.display = "none";
+      };
+
+      slide.appendChild(audio);
+    } else {
+      if (isDataSaver && !isLocal) {
+        const placeholder = document.createElement("div");
+        placeholder.className = "data-saver-placeholder";
+        placeholder.innerHTML = `<p>${translations[currentLang]["label-datasaver"]}</p>`;
+        slide.appendChild(placeholder);
+      } else {
+        const img = document.createElement("img");
+        const imageSrc =
+          dl.thumbnail ||
+          (typeof dl.url === "string" ? dl.url : "") ||
+          resultThumbnail ||
+          "";
+        setupImageLoading(img, imageSrc, resultThumbnail);
+        slide.appendChild(img);
+      }
+    }
+
+    if (isLocal) {
+      const badge = document.createElement("div");
+      badge.className = "local-badge";
+      badge.innerHTML = `
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="currentColor">
+          <path d="M9 16.2L4.8 12l-1.4 1.4L9 19 21 7l-1.4-1.4L9 16.2z"/>
+        </svg>
+        <span>${translations[currentLang]["label-offline"] || "OFFLINE"}</span>
+      `;
+      slide.appendChild(badge);
+    }
+
+    container.appendChild(slide);
+  });
+}
+
+/**
+ * Robust image loader with proxy and referer bypass
+ */
+export function setupImageLoading(img, src, resultThumbnail) {
+  let fallbackThumb = resultThumbnail || "";
+  const isIndownAsset =
+    fallbackThumb.includes("indown.io") &&
+    !fallbackThumb.includes("url=") &&
+    !fallbackThumb.includes("token=");
+
+  if (
+    fallbackThumb &&
+    (fallbackThumb.includes("logo") ||
+      fallbackThumb.includes("placeholder") ||
+      fallbackThumb.includes("images/") ||
+      isIndownAsset)
+  ) {
+    fallbackThumb = "";
+  }
+
+  img.src = src || fallbackThumb || "";
+  img.referrerPolicy = "no-referrer";
+  img.onerror = () => {
+    const isLocal =
+      img.src.includes("_capacitor_file_") ||
+      img.src.startsWith("file://") ||
+      img.src.startsWith("data:") ||
+      img.src.startsWith("blob:");
+
+    if (isLocal) {
+      if (
+        !img.dataset.localRetried &&
+        window.Capacitor?.isNativePlatform?.() &&
+        Filesystem
+      ) {
+        img.dataset.localRetried = "1";
+        let cleanPath = img.src;
+        if (cleanPath.includes("_capacitor_file_")) {
+          cleanPath = cleanPath.substring(
+            cleanPath.indexOf("_capacitor_file_") + 16,
+          );
+        }
+        if (cleanPath.startsWith("file://")) {
+          cleanPath = cleanPath.replace(/^file:\/\//, "");
+        }
+        Filesystem.readFile({ path: cleanPath })
+          .then((res) => {
+            if (res && res.data) {
+              const ext = cleanPath.split(".").pop().toLowerCase();
+              const mime =
+                ext === "png"
+                  ? "image/png"
+                  : ext === "webp"
+                    ? "image/webp"
+                    : "image/jpeg";
+              img.src = `data:${mime};base64,${res.data}`;
+            } else if (fallbackThumb && img.src !== fallbackThumb) {
+              img.src = fallbackThumb;
+            }
+          })
+          .catch(() => {
+            if (fallbackThumb && img.src !== fallbackThumb) {
+              img.src = fallbackThumb;
+            }
+          });
+      } else if (fallbackThumb && img.src !== fallbackThumb) {
+        img.src = fallbackThumb;
+      }
+      return;
+    }
+
+    if (!navigator.onLine) {
+      if (fallbackThumb && img.src !== fallbackThumb) {
+        img.src = fallbackThumb;
+      }
+      return;
+    }
+
+    if (!img.dataset.retry) {
+      img.dataset.retry = "1";
+      const originalSrc = img.src;
+      img.src = `https://images.weserv.nl/?url=${encodeURIComponent(originalSrc)}&default=${encodeURIComponent(originalSrc)}`;
+    } else if (
+      img.dataset.retry === "1" &&
+      window.Capacitor?.isNativePlatform?.()
+    ) {
+      img.dataset.retry = "2";
+      const targetUrl = img.src.includes("weserv.nl")
+        ? decodeURIComponent(img.src.split("url=")[1].split("&")[0])
+        : img.src;
+
+      let referer = "https://www.google.com/";
+      if (
+        targetUrl.includes("snaptik.app") ||
+        targetUrl.includes("tikdownloader.io") ||
+        targetUrl.includes("snapcdn.app")
+      )
+        referer = "https://tikdownloader.io/";
+      if (targetUrl.includes("tiktokio.com")) referer = "https://tiktokio.com/";
+      if (targetUrl.includes("instagram.com"))
+        referer = "https://www.instagram.com/";
+      if (targetUrl.includes("douyin") || targetUrl.includes("douyinpic"))
+        referer = "https://www.douyin.com/";
+      if (
+        targetUrl.includes("xiaohongshu") ||
+        targetUrl.includes("xhscdn") ||
+        targetUrl.includes("rednote")
+      )
+        referer = "https://www.xiaohongshu.com/";
+      if (
+        targetUrl.includes("bilibili") ||
+        targetUrl.includes("biliimg") ||
+        targetUrl.includes("bili.im")
+      )
+        referer = "https://www.bilibili.com/";
+      if (
+        targetUrl.includes("rapidcdn") ||
+        targetUrl.includes("snapcdn") ||
+        targetUrl.includes("snapsave")
+      )
+        referer = "https://snapsave.app/";
+
+      if (CapacitorHttp) {
+        CapacitorHttp.get({
+          url: targetUrl,
+          responseType: "blob",
+          headers: {
+            Referer: referer,
+            "User-Agent":
+              "Mozilla/5.0 (iPhone; CPU iPhone OS 16_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.5 Mobile/15E148 Safari/604.1",
+          },
+        })
+          .then((res) => {
+            if (res.data) {
+              const reader = new FileReader();
+              reader.onloadend = () => (img.src = reader.result);
+              reader.readAsDataURL(res.data);
+            }
+          })
+          .catch(() => {
+            img.style.display = "none";
+          });
+      }
+    } else {
+      img.style.display = "none";
+    }
+  };
+}
+
+export function updateSliderUI() {
+  const slidesWrapper = document.getElementById("slidesWrapper");
+  const slides = slidesWrapper
+    ? slidesWrapper.querySelectorAll(".preview-slide")
+    : [];
+  const sliderItems = slideData.filter((dl) => !dl.isMirror);
+  const slideIndicator = document.getElementById("slideIndicator");
+  const slidePrevBtn = document.getElementById("slidePrevBtn");
+  const slideNextBtn = document.getElementById("slideNextBtn");
+
+  slides.forEach((slide, index) => {
+    const media = slide.querySelector("video, audio");
+    const playerContainer = slide.querySelector(".mori-player-container");
+    if (index === currentSlideIndex) {
+      slide.classList.add("active");
+      if (playerContainer && typeof playerContainer._tryAutoPlay === "function") {
+        playerContainer._tryAutoPlay();
+      } else if (media) {
+        media.loop = localStorage.getItem("mori_loop") !== "false";
+        if (localStorage.getItem("mori_autoplay") !== "false") {
+          if (media.paused) {
+            const playPromise = media.play();
+            if (playPromise !== undefined) {
+              playPromise.catch((err) => {
+                if (
+                  err &&
+                  (err.name === "NotAllowedError" || err.name === "AbortError") &&
+                  !media.muted &&
+                  media.tagName === "VIDEO"
+                ) {
+                  console.warn("Unmuted autoplay restricted, attempting muted:", err);
+                  media.muted = true;
+                  const pc = media.closest(".mori-player-container");
+                  if (pc) {
+                    const unmute = pc.querySelector(".unmute-icon");
+                    const mute = pc.querySelector(".mute-icon");
+                    if (unmute && mute) {
+                      unmute.classList.add("hidden");
+                      mute.classList.remove("hidden");
+                    }
+                  }
+                  media.play().catch(() => {});
+                }
+              });
+            }
+          }
+        }
+      }
+    } else {
+      slide.classList.remove("active");
+      if (media) {
+        media.pause();
+        try {
+          if (media.currentTime > 0.5) media.currentTime = 0;
+        } catch (_) {}
+      }
+    }
+  });
+
+  const galleryThumbs = document.querySelectorAll(
+    "#previewContainer .gallery-thumb-item",
+  );
+  galleryThumbs.forEach((thumb) => {
+    thumb.classList.toggle(
+      "is-active",
+      Number(thumb.dataset.slideIndex) === currentSlideIndex,
+    );
+  });
+  const activeThumb = document.querySelector(
+    `#previewContainer .gallery-thumb-item[data-slide-index="${currentSlideIndex}"]`,
+  );
+  activeThumb?.scrollIntoView({ block: "nearest", inline: "nearest" });
+
+  if (slideIndicator)
+    slideIndicator.textContent = `${currentSlideIndex + 1} / ${sliderItems.length}`;
+  if (slidePrevBtn) slidePrevBtn.disabled = currentSlideIndex === 0;
+  if (slideNextBtn)
+    slideNextBtn.disabled = currentSlideIndex === sliderItems.length - 1;
+}
+
+export function renderResult(result, originalUrl) {
+  setSlideData(result.downloads);
+  setCurrentSlideIndex(0);
+
+  const slidesWrapper = document.getElementById("slidesWrapper");
+  const sliderNav = document.getElementById("sliderNav");
+  const previewContainer = document.getElementById("previewContainer");
+  const resultTitle = document.getElementById("resultTitle");
+  const downloadList = document.getElementById("downloadList");
+  const resultSection = document.getElementById("resultSection");
+  const urlInput = document.getElementById("urlInput");
+
+  if (!slidesWrapper) return;
+  stopAllMedia(slidesWrapper);
+  slidesWrapper.innerHTML = "";
+  previewContainer?.classList.remove("gallery-mode");
+  previewContainer?.querySelector(".gallery-thumbnail-rail")?.remove();
+  if (downloadList) downloadList.innerHTML = "";
+
+  if (detachResultSavedListener) {
+    detachResultSavedListener();
+    detachResultSavedListener = null;
+  }
+
+  const hasVisualDownloads = (result.downloads || []).some((item) => {
+    const type = String(item?.type || "");
+    return !/mp3|audio|128k|48k|m4a|wav|flac/i.test(type);
+  });
+  const hasImageDownloads = (result.downloads || []).some((item) => {
+    const type = String(item?.type || "").toUpperCase();
+    return type.includes("IMAGE") || type.includes("PHOTO");
+  });
+
+  let downloadFollowup = null;
+  if (downloadList) {
+    if (hasVisualDownloads) createQuickDestinationPanel(downloadList);
+    downloadFollowup = createDownloadFollowup(downloadList);
+    if (hasImageDownloads) {
+      createAlbumAssignmentPanel(downloadList, result.sourceUrl || originalUrl);
+    }
+
+    const onSaved = (event) => {
+      const savedPath = event.detail?.uri || event.detail?.path || "";
+      const rawPath = event.detail?.path || savedPath;
+      if (!savedPath || !downloadFollowup) return;
+
+      const pathLabel = downloadFollowup.querySelector(".download-followup-path");
+      if (pathLabel) pathLabel.textContent = rawPath;
+      downloadFollowup.classList.remove("hidden");
+
+      const fileBtn = downloadFollowup.querySelector('[data-action="file"]');
+      const folderBtn = downloadFollowup.querySelector('[data-action="folder"]');
+      if (fileBtn) fileBtn.onclick = () => openDownloadedPath(savedPath, true);
+      if (folderBtn) {
+        folderBtn.onclick = () => openDownloadedPath(parentPath(rawPath), false);
+      }
+    };
+
+    window.addEventListener("mori_file_saved", onSaved);
+    detachResultSavedListener = () =>
+      window.removeEventListener("mori_file_saved", onSaved);
+  }
+
+  let sliderItems = slideData.filter((dl) => !dl.isMirror);
+
+  // For platforms with multiple stream qualities (Bilibili, Douyin, and RedNote video), only keep the first video stream for the preview slides to avoid duplicates
+  const isBilibili =
+    /bilibili|bili\.im/i.test(urlInput.value) ||
+    (result.title && /bilibili|bili\.im/i.test(result.title.toLowerCase()));
+  const isDouyin =
+    /douyin/i.test(urlInput.value) ||
+    (result.title && /douyin/i.test(result.title.toLowerCase()));
+  const isRedNoteVideo =
+    (/xiaohongshu|rednote/i.test(urlInput.value) ||
+      (result.title &&
+        /xiaohongshu|rednote/i.test(result.title.toLowerCase()))) &&
+    sliderItems.some((dl) => {
+      const t = dl.type?.toUpperCase() || "";
+      return t.includes("VIDEO") || t.includes("MP4") || /\d+p/i.test(t);
+    });
+  const isTwitterVideo =
+    (/twitter\.com|x\.com|fixupx|fxtwitter|vxtwitter/i.test(urlInput.value) ||
+      (result.title && /twitter/i.test(result.title.toLowerCase()))) &&
+    !sliderItems.some((dl) => dl.type === "IMAGE" || dl.type === "PHOTO");
+  const isTikTokVideo =
+    (/tiktok\.com/i.test(urlInput.value) ||
+      (result.title && /tiktok/i.test(result.title.toLowerCase()))) &&
+    !sliderItems.some((dl) => dl.type === "IMAGE" || dl.type === "PHOTO");
+
+  if (isDouyin) {
+    const hasPhoto = sliderItems.some((dl) => {
+      const type = (dl.type || "").toUpperCase();
+      return type.includes("PHOTO") || type.includes("IMAGE");
+    });
+    if (hasPhoto) {
+      sliderItems = sliderItems.filter((dl) => {
+        const type = (dl.type || "").toUpperCase();
+        return type.includes("PHOTO") || type.includes("IMAGE");
+      });
+    } else {
+      const nonMirror = sliderItems.find((dl) => !dl.isMirror);
+      sliderItems = nonMirror
+        ? [nonMirror]
+        : sliderItems.length > 0
+          ? [sliderItems[0]]
+          : [];
+    }
+  } else if (isBilibili || isRedNoteVideo || isTwitterVideo || isTikTokVideo) {
+    const firstItem = sliderItems.find((dl) => !dl.isMirror) || sliderItems[0];
+    sliderItems = firstItem ? [firstItem] : [];
+  }
+
+  // Keep global slider state aligned with the slides that are actually rendered.
+  // This avoids navigation moving past filtered gallery/video previews.
+  setSlideData(sliderItems);
+
+  const isSinglePreview =
+    /youtube\.com|youtu\.be|spotify\.com|music\.apple\.com|bandcamp\.com|bilibili\.com|bilibili\.tv|bilivideo|bili\.im/i.test(
+      urlInput.value,
+    ) ||
+    (result.title &&
+      /youtube|spotify|apple music|bandcamp|bilibili|bili\.im/i.test(
+        result.title.toLowerCase(),
+      ));
+
+  if (sliderItems.length > 0 && !isSinglePreview) {
+    renderMediaSlides(slidesWrapper, sliderItems, result.thumbnail);
+    if (sliderItems.length > 1) {
+      sliderNav?.classList.remove("hidden");
+    } else {
+      sliderNav?.classList.add("hidden");
+    }
+    updateSliderUI();
+  } else if (sliderItems.length > 0 && isSinglePreview) {
+    slidesWrapper.innerHTML = "";
+    const slide = document.createElement("div");
+    slide.className = "preview-slide active";
+    const img = document.createElement("img");
+    img.style.width = "100%";
+    img.style.borderRadius = "8px";
+    img.style.objectFit = "cover";
+    setupImageLoading(img, result.thumbnail || "", result.thumbnail);
+    slide.appendChild(img);
+    slidesWrapper.appendChild(slide);
+    sliderNav?.classList.add("hidden");
+  } else {
+    slidesWrapper.innerHTML = "";
+    const slide = document.createElement("div");
+    slide.className = "preview-slide active";
+    const img = document.createElement("img");
+    img.src = result.thumbnail || "";
+    img.referrerPolicy = "no-referrer";
+    img.onerror = () => {
+      if (!img.dataset.retry) {
+        img.dataset.retry = "1";
+        const originalSrc = img.src;
+        img.src = `https://images.weserv.nl/?url=${encodeURIComponent(originalSrc)}&default=${encodeURIComponent(originalSrc)}`;
+      } else if (
+        img.dataset.retry === "1" &&
+        window.Capacitor?.isNativePlatform?.()
+      ) {
+        img.dataset.retry = "2";
+        CapacitorHttp.get({
+          url: img.src.includes("weserv.nl")
+            ? decodeURIComponent(img.src.split("url=")[1].split("&")[0])
+            : img.src,
+          responseType: "blob",
+          headers: { Referer: "https://www.instagram.com/" },
+        })
+          .then((res) => {
+            if (res.data) {
+              const reader = new FileReader();
+              reader.onloadend = () => (img.src = reader.result);
+              reader.readAsDataURL(res.data);
+            }
+          })
+          .catch(() => {
+            img.style.display = "none";
+          });
+      } else {
+        img.style.display = "none";
+      }
+    };
+    slide.appendChild(img);
+    slidesWrapper.appendChild(slide);
+    sliderNav?.classList.add("hidden");
+  }
+
+  // PDF Export Option for Galleries (Hybrid Mode)
+  const imageItems = sliderItems.filter((item) => {
+    const type = (item.type || "").toUpperCase();
+    const rawUrl =
+      typeof item.url === "string"
+        ? item.url
+        : item.url?.url || item.url?.src || String(item.url || "");
+    const url = rawUrl.toLowerCase();
+    const isImage =
+      type.includes("PAGE") ||
+      type.includes("IMAGE") ||
+      type.includes("PHOTO") ||
+      url.match(/\.(jpg|jpeg|png|webp)/);
+    const isVideo =
+      type.includes("VIDEO") ||
+      type.includes("MP4") ||
+      /\d+p/i.test(type) ||
+      url.match(/\.(mp4|mkv|mov|avi)/);
+    return isImage && !isVideo;
+  });
+
+  const isGallery = !isSinglePreview && imageItems.length >= 2;
+  const galleryEntries = imageItems
+    .map((item, imageIndex) => ({
+      item,
+      imageIndex,
+      slideIndex: sliderItems.indexOf(item),
+      resultIndex: result.downloads.indexOf(item),
+    }))
+    .filter((entry) => entry.slideIndex >= 0 && entry.resultIndex >= 0);
+  const galleryResultIndices = new Set(
+    galleryEntries.map((entry) => entry.resultIndex),
+  );
+  const gallerySelectedIndices = new Set(galleryResultIndices);
+  const galleryDownloadedIndices = new Set();
+  let gallerySelectionSummary = null;
+  let galleryDownloadSelectedBtn = null;
+  let galleryDownloadAllBtn = null;
+  let gallerySelectionPanel = null;
+  let galleryBatchDownloading = false;
+  let galleryBatchCancelled = false;
+  let galleryBatchActiveButton = null;
+
+  const markGalleryDownloaded = (resultIndex) => {
+    if (resultIndex < 0 || !galleryResultIndices.has(resultIndex)) return;
+    galleryDownloadedIndices.add(resultIndex);
+    const thumb = previewContainer?.querySelector(
+      `.gallery-thumb-item[data-result-index="${resultIndex}"]`,
+    );
+    thumb?.classList.add("is-downloaded");
+    thumb
+      ?.querySelector(".gallery-thumb-downloaded")
+      ?.setAttribute("aria-hidden", "false");
+    downloadList
+      ?.querySelector(`.dl-item[data-download-index="${resultIndex}"]`)
+      ?.classList.add("is-downloaded");
+  };
+
+  const updateGallerySelectionUI = () => {
+    if (!isGallery) return;
+
+    const selectedCount = gallerySelectedIndices.size;
+    const total = galleryEntries.length;
+    const selectedText = t("gallery-selected-count", {
+      selected: selectedCount,
+      total,
+    });
+    const downloadedText = galleryDownloadedIndices.size
+      ? ` · ${t("gallery-downloaded-count", {
+          count: galleryDownloadedIndices.size,
+        })}`
+      : "";
+
+    if (gallerySelectionSummary) {
+      gallerySelectionSummary.textContent = `${selectedText}${downloadedText}`;
+    }
+
+    previewContainer
+      ?.querySelectorAll(".gallery-thumb-item")
+      .forEach((thumb) => {
+        const resultIndex = Number(thumb.dataset.resultIndex);
+        const selected = gallerySelectedIndices.has(resultIndex);
+        thumb.classList.toggle("is-selected", selected);
+        const toggle = thumb.querySelector(".gallery-thumb-select");
+        if (toggle) {
+          toggle.setAttribute("aria-pressed", String(selected));
+          toggle.disabled = galleryBatchDownloading;
+        }
+      });
+
+    if (galleryDownloadSelectedBtn) {
+      const label = galleryDownloadSelectedBtn.querySelector(
+        ".gallery-action-label",
+      );
+      const count = galleryDownloadSelectedBtn.querySelector(
+        ".gallery-action-count",
+      );
+      const isActive = galleryBatchActiveButton === galleryDownloadSelectedBtn;
+      galleryDownloadSelectedBtn.disabled = galleryBatchDownloading
+        ? !isActive
+        : selectedCount === 0;
+      if (label) {
+        label.textContent = isActive
+          ? t("btn-cancel-download")
+          : t("gallery-download-selected");
+      }
+      if (count) count.textContent = String(selectedCount);
+    }
+
+    if (galleryDownloadAllBtn) {
+      const label = galleryDownloadAllBtn.querySelector(".gallery-action-label");
+      const count = galleryDownloadAllBtn.querySelector(".gallery-action-count");
+      const isActive = galleryBatchActiveButton === galleryDownloadAllBtn;
+      galleryDownloadAllBtn.disabled = galleryBatchDownloading ? !isActive : false;
+      if (label) {
+        label.textContent = isActive
+          ? t("btn-cancel-download")
+          : t("gallery-download-all");
+      }
+      if (count) count.textContent = String(total);
+    }
+
+    gallerySelectionPanel
+      ?.querySelectorAll(".gallery-selection-tool")
+      .forEach((btn) => {
+        btn.disabled = galleryBatchDownloading;
+      });
+  };
+
+  const runGalleryBatch = async (entries, triggerBtn) => {
+    if (galleryBatchDownloading) {
+      if (galleryBatchActiveButton === triggerBtn) {
+        galleryBatchCancelled = true;
+        window._moriDownloadCancelled = true;
+      }
+      return;
+    }
+
+    const queue = entries.filter(Boolean);
+    if (queue.length === 0) {
+      showToast(t("gallery-no-selection"));
+      return;
+    }
+
+    galleryBatchDownloading = true;
+    galleryBatchCancelled = false;
+    galleryBatchActiveButton = triggerBtn;
+    window._moriDownloadCancelled = false;
+    window._moriPlaylistDownloading = true;
+    updateGallerySelectionUI();
+    try {
+      await requestWakeLock(true);
+    } catch (_) {}
+
+    let successCount = 0;
+    let failedCount = 0;
+
+    try {
+      for (const entry of queue) {
+        if (galleryBatchCancelled || window._moriDownloadCancelled) break;
+
+        const thumb = previewContainer?.querySelector(
+          `.gallery-thumb-item[data-result-index="${entry.resultIndex}"]`,
+        );
+        const row = downloadList?.querySelector(
+          `.dl-item[data-download-index="${entry.resultIndex}"]`,
+        );
+        thumb?.classList.add("is-downloading");
+        row?.classList.add("is-downloading");
+
+        const rawUrl =
+          typeof entry.item.url === "string"
+            ? entry.item.url
+            : entry.item.url?.url ||
+              entry.item.url?.src ||
+              String(entry.item.url || "");
+
+        let downloadResult;
+        try {
+          downloadResult = await startNativeDownload(
+            rawUrl,
+            entry.item.type || "IMAGE",
+            result.title,
+            null,
+            result.sourceUrl || originalUrl,
+            false,
+            entry.item.fallbackUrls || [],
+          );
+        } catch (err) {
+          console.error("Gallery batch download error:", err);
+          downloadResult = { success: false, error: err?.message };
+        } finally {
+          thumb?.classList.remove("is-downloading");
+          row?.classList.remove("is-downloading");
+        }
+
+        if (galleryBatchCancelled || window._moriDownloadCancelled) break;
+
+        if (downloadResult?.success) {
+          successCount++;
+          markGalleryDownloaded(entry.resultIndex);
+        } else {
+          failedCount++;
+        }
+        updateGallerySelectionUI();
+      }
+    } finally {
+      galleryBatchDownloading = false;
+      galleryBatchActiveButton = null;
+      window._moriPlaylistDownloading = false;
+      window._moriDownloadCancelled = false;
+      releaseWakeLock();
+      if (window.MoriMainBridge?.stopDownloadService) {
+        try {
+          window.MoriMainBridge.stopDownloadService();
+        } catch (_) {}
+      }
+      updateGallerySelectionUI();
+    }
+
+    if (galleryBatchCancelled) {
+      showToast(t("toast-download-cancelled"));
+    } else if (failedCount === 0) {
+      if (successCount > 0) playCompletionSound();
+      showToast(t("gallery-download-complete", { count: successCount }));
+    } else {
+      showToast(
+        t("gallery-download-partial", {
+          success: successCount,
+          total: successCount + failedCount,
+          failed: failedCount,
+        }),
+      );
+    }
+    galleryBatchCancelled = false;
+  };
+
+  if (isGallery) {
+    if (previewContainer) {
+      previewContainer.classList.add("gallery-mode");
+      const rail = document.createElement("div");
+      rail.className = "gallery-thumbnail-rail";
+      rail.setAttribute("aria-label", t("gallery-thumbnails"));
+
+      galleryEntries.forEach((entry) => {
+        const thumb = document.createElement("div");
+        thumb.className = "gallery-thumb-item is-selected";
+        thumb.dataset.slideIndex = String(entry.slideIndex);
+        thumb.dataset.resultIndex = String(entry.resultIndex);
+
+        const previewBtn = document.createElement("button");
+        previewBtn.type = "button";
+        previewBtn.className = "gallery-thumb-preview";
+        previewBtn.setAttribute(
+          "aria-label",
+          `${t("gallery-thumbnails")} ${entry.imageIndex + 1}`,
+        );
+
+        const img = document.createElement("img");
+        img.alt = `${t("gallery-thumbnails")} ${entry.imageIndex + 1}`;
+        const thumbUrl =
+          entry.item.thumbnail ||
+          (typeof entry.item.url === "string"
+            ? entry.item.url
+            : entry.item.url?.url || entry.item.url?.src || "") ||
+          result.thumbnail ||
+          "";
+        setupImageLoading(img, thumbUrl, result.thumbnail);
+        previewBtn.appendChild(img);
+
+        const number = document.createElement("span");
+        number.className = "gallery-thumb-number";
+        number.textContent = String(entry.imageIndex + 1);
+        previewBtn.appendChild(number);
+
+        const selectBtn = document.createElement("button");
+        selectBtn.type = "button";
+        selectBtn.className = "gallery-thumb-select";
+        selectBtn.setAttribute("aria-pressed", "true");
+        selectBtn.setAttribute(
+          "aria-label",
+          `${t("gallery-selection-title")} ${entry.imageIndex + 1}`,
+        );
+        selectBtn.textContent = "✓";
+
+        const downloaded = document.createElement("span");
+        downloaded.className = "gallery-thumb-downloaded";
+        downloaded.setAttribute("aria-label", t("gallery-downloaded"));
+        downloaded.setAttribute("aria-hidden", "true");
+        downloaded.textContent = "✓";
+
+        previewBtn.addEventListener("click", () => {
+          setCurrentSlideIndex(entry.slideIndex);
+          updateSliderUI();
+        });
+        selectBtn.addEventListener("click", () => {
+          if (gallerySelectedIndices.has(entry.resultIndex)) {
+            gallerySelectedIndices.delete(entry.resultIndex);
+          } else {
+            gallerySelectedIndices.add(entry.resultIndex);
+          }
+          updateGallerySelectionUI();
+        });
+
+        thumb.append(previewBtn, selectBtn, downloaded);
+        rail.appendChild(thumb);
+      });
+
+      previewContainer.prepend(rail);
+      updateSliderUI();
+    }
+
+    gallerySelectionPanel = document.createElement("div");
+    gallerySelectionPanel.className = "gallery-selection-panel";
+    gallerySelectionPanel.innerHTML = `
+      <div class="gallery-selection-header">
+        <div class="gallery-selection-copy">
+          <strong>${escapeHtml(t("gallery-selection-title"))}</strong>
+          <span class="gallery-selection-summary"></span>
+        </div>
+        <div class="gallery-selection-tools">
+          <button type="button" class="gallery-selection-tool" data-action="all">${escapeHtml(t("gallery-select-all"))}</button>
+          <button type="button" class="gallery-selection-tool" data-action="clear">${escapeHtml(t("gallery-clear-selection"))}</button>
+        </div>
+      </div>
+      <div class="gallery-batch-actions">
+        <button type="button" class="gallery-batch-btn gallery-batch-primary" data-action="selected">
+          <span class="gallery-action-label">${escapeHtml(t("gallery-download-selected"))}</span>
+          <span class="gallery-action-count">${galleryEntries.length}</span>
+        </button>
+        <button type="button" class="gallery-batch-btn" data-action="all">
+          <span class="gallery-action-label">${escapeHtml(t("gallery-download-all"))}</span>
+          <span class="gallery-action-count">${galleryEntries.length}</span>
+        </button>
+      </div>
+    `;
+
+    gallerySelectionSummary = gallerySelectionPanel.querySelector(
+      ".gallery-selection-summary",
+    );
+    galleryDownloadSelectedBtn = gallerySelectionPanel.querySelector(
+      '.gallery-batch-btn[data-action="selected"]',
+    );
+    galleryDownloadAllBtn = gallerySelectionPanel.querySelector(
+      '.gallery-batch-btn[data-action="all"]',
+    );
+
+    gallerySelectionPanel
+      .querySelector('.gallery-selection-tool[data-action="all"]')
+      ?.addEventListener("click", () => {
+        galleryEntries.forEach((entry) =>
+          gallerySelectedIndices.add(entry.resultIndex),
+        );
+        updateGallerySelectionUI();
+      });
+    gallerySelectionPanel
+      .querySelector('.gallery-selection-tool[data-action="clear"]')
+      ?.addEventListener("click", () => {
+        gallerySelectedIndices.clear();
+        updateGallerySelectionUI();
+      });
+    galleryDownloadSelectedBtn?.addEventListener("click", () => {
+      const selectedEntries = galleryEntries.filter((entry) =>
+        gallerySelectedIndices.has(entry.resultIndex),
+      );
+      runGalleryBatch(selectedEntries, galleryDownloadSelectedBtn);
+    });
+    galleryDownloadAllBtn?.addEventListener("click", () => {
+      runGalleryBatch(galleryEntries, galleryDownloadAllBtn);
+    });
+
+    downloadList.appendChild(gallerySelectionPanel);
+    updateGallerySelectionUI();
+
+    const pdfBtn = document.createElement("button");
+    pdfBtn.className = "pdf-btn";
+    const label =
+      imageItems.length === sliderItems.length
+        ? translations[currentLang]["pdf-btn-gallery"]
+        : translations[currentLang]["pdf-btn-images"];
+    const infoText =
+      imageItems.length === sliderItems.length
+        ? `${imageItems.length} ${translations[currentLang]["pdf-pages"]}`
+        : `${imageItems.length} ${translations[currentLang]["pdf-images-detected"]}`;
+
+    pdfBtn.innerHTML = `
+      <div class="option-info">
+        <span class="option-type">${label}</span>
+        <span class="option-size">${infoText}</span>
+      </div>
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" width="20" height="20" fill="currentColor">
+        <path d="M13.156 9.211c-.213-.21-.686-.321-1.406-.331a11.754 11.754 0 0 0-1.69.124c-.276-.159-.561-.333-.784-.542-.601-.561-1.103-1.34-1.415-2.197.02-.08.038-.15.054-.222 0 0 .339-1.923.249-2.573a.73.73 0 0 0-.044-.184l-.029-.076c-.092-.212-.273-.437-.556-.425l-.171-.005c-.316 0-.573.161-.64.403-.205.757.007 1.889.39 3.355l-.098.239c-.275.67-.619 1.345-.923 1.94l-.04.077c-.32.626-.61 1.157-.873 1.607l-.271.144c-.02.01-.485.257-.594.323-.926.553-1.539 1.18-1.641 1.678-.032.159-.008.362.156.456l.263.132a.792.792 0 0 0 .357.086c.659 0 1.425-.821 2.48-2.662a24.79 24.79 0 0 1 3.819-.908c.926.521 2.065.883 2.783.883.128 0 .238-.012.327-.036a.558.558 0 0 0 .325-.222c.139-.21.168-.499.13-.795a.531.531 0 0 0-.157-.271zM3.307 12.72c.12-.329.596-.979 1.3-1.556.044-.036.153-.138.253-.233-.736 1.174-1.229 1.642-1.553 1.788zm4.169-9.6c.212 0 .333.534.343 1.035s-.107.853-.252 1.113c-.12-.385-.179-.992-.179-1.389 0 0-.009-.759.088-.759zM6.232 9.961c.148-.264.301-.543.458-.839.383-.724.624-1.29.804-1.755a5.813 5.813 0 0 0 1.328 1.649c.065.055.135.111.207.166-1.066.211-1.987.467-2.798.779zm6.72-.06c-.065.041-.251.064-.37.064-.386 0-.864-.176-1.533-.464.257-.019.493-.029.705-.029.387 0 .502-.002.88.095s.383.293.318.333z"/><path d="M14.341 3.579c-.347-.473-.831-1.027-1.362-1.558S11.894 1.006 11.421.659C10.615.068 10.224 0 10 0H2.25C1.561 0 1 .561 1 1.25v13.5c0 .689.561 1.25 1.25 1.25h11.5c.689 0 1.25-.561 1.25-1.25V5c0-.224-.068-.615-.659-1.421zm-2.07-.85c.48.48.856.912 1.134 1.271h-2.406V1.595c.359.278.792.654 1.271 1.134zM14 14.75c0 .136-.114.25-.25.25H2.25a.253.253 0 0 1-.25-.25V1.25c0-.135.115-.25.25-.25H10v3.5a.5.5 0 0 0 .5.5H14v9.75z"/></svg>
+    `;
+    pdfBtn.onclick = () => exportGalleryToPdf(result.title, imageItems);
+    downloadList.appendChild(pdfBtn);
+  }
+
+  let cleanTitleText = (
+    result.title || translations[currentLang]["label-content"]
+  )
+    .replace(/#[^\s#]+/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+  if (resultTitle) resultTitle.textContent = truncate(cleanTitleText, 80);
+
+  if (downloadList) {
+    const isPlaylistOrAlbum =
+      /playlist|album/i.test(originalUrl || "") ||
+      /playlist|album/i.test(result.sourceUrl || "") ||
+      (result.title && /\((Playlist|Album)\)/i.test(result.title));
+
+    const hasTrackNumbers = result.downloads?.some((dl) =>
+      /^\d+\.\s+/.test((dl.type || "").trim()),
+    );
+
+    const isMultiTrackContent = isPlaylistOrAlbum || hasTrackNumbers;
+
+    let failedIndices = [];
+    let allBtn = null;
+    let titleText = "";
+    let countText = "";
+
+    if (
+      isMultiTrackContent &&
+      result.downloads &&
+      result.downloads.length >= 2
+    ) {
+      allBtn = document.createElement("button");
+      allBtn.className = "dl-item dl-all-btn";
+
+      titleText =
+        translations[currentLang]["btn-download-all-title"] || "Download All";
+      const rawCountText =
+        translations[currentLang]["label-items-count"] || "${count} Items";
+      countText = rawCountText.replace(
+        "${count}",
+        result.downloads.length,
+      );
+
+      allBtn.innerHTML = `
+        <div class="dl-all-left">
+          <svg viewBox="0 0 24 24" width="18" height="18" fill="currentColor">
+            <path d="M19.35 10.04C18.67 6.59 15.64 4 12 4 9.11 4 6.6 5.64 5.35 8.04 2.34 8.36 0 10.91 0 14c0 3.31 2.69 6 6 6h13c2.76 0 5-2.24 5-5 0-2.64-2.05-4.78-4.65-4.96zM17 13l-5 5-5-5h3V9h4v4h3z"/>
+          </svg>
+          <span class="dl-all-title">${escapeHtml(titleText)}</span>
+        </div>
+        <div class="dl-badge dl-all-badge">${escapeHtml(countText)}</div>
+      `;
+
+      let isDownloadingAll = false;
+      let playlistCancelled = false;
+
+      allBtn.addEventListener("click", async () => {
+        // If downloading, act as CANCEL
+        if (isDownloadingAll) {
+          playlistCancelled = true;
+          window._moriDownloadCancelled = true;
+          return;
+        }
+
+        isDownloadingAll = true;
+        playlistCancelled = false;
+        window._moriDownloadCancelled = false;
+        window._moriPlaylistDownloading = true;
+        allBtn.disabled = false; // keep enabled to act as Cancel
+
+        // Clean up any lingering download progress toast before playlist begins
+        const existingToasts = document.querySelectorAll(".download-progress-toast");
+        existingToasts.forEach((el) => el.remove());
+
+        // Keep screen awake throughout playlist download
+        await requestWakeLock(true);
+
+        const total = result.downloads.length;
+        const progressStr =
+          translations[currentLang]["downloading-progress"] || "Downloading...";
+        const cancelLabel = translations[currentLang]["btn-cancel"] || "Cancel";
+
+        const titleSpan = allBtn.querySelector(".dl-all-title");
+        const badgeEl = allBtn.querySelector(".dl-all-badge");
+
+        // Determine items to process: if failed items exist, retry only those!
+        const isRetryMode = failedIndices.length > 0;
+        const indicesToProcess = isRetryMode
+          ? [...failedIndices]
+          : Array.from({ length: total }, (_, i) => i);
+
+        // Show cancel affordance in badge
+        if (badgeEl) {
+          badgeEl.textContent = cancelLabel;
+          badgeEl.style.backgroundColor = "";
+          badgeEl.style.color = "";
+        }
+
+        let currentFailedIndices = [];
+
+        // Start Foreground Service notification
+        if (window.MoriMainBridge?.startDownloadService) {
+          try {
+            window.MoriMainBridge.startDownloadService(
+              `Downloading Playlist (1/${indicesToProcess.length})...`,
+            );
+          } catch (_) {}
+        }
+
+        try {
+          for (let step = 0; step < indicesToProcess.length; step++) {
+            if (playlistCancelled) break;
+
+            const i = indicesToProcess[step];
+            const item = result.downloads[i];
+            const currNum = step + 1;
+
+            if (titleSpan) {
+              titleSpan.textContent = `${progressStr} ${currNum}/${indicesToProcess.length}`;
+            }
+
+            // Target item button in UI if available
+            const itemBtns = downloadList.querySelectorAll(
+              ".dl-item:not(.dl-all-btn)",
+            );
+            const targetBtn = itemBtns[i] || null;
+
+            const cleanLabel = (item.type || "")
+              .replace(/\s*\[(MP3|MP4|JPG|PNG|WEBP)\]/gi, "")
+              .trim();
+
+            if (window.MoriMainBridge?.startDownloadService) {
+              try {
+                window.MoriMainBridge.startDownloadService(
+                  `Downloading (${currNum}/${indicesToProcess.length}): ${cleanLabel || result.title}`,
+                );
+              } catch (_) {}
+            }
+
+            let dlResult = null;
+            try {
+              dlResult = await startNativeDownload(
+                item.url,
+                item.type,
+                result.title,
+                targetBtn,
+                result.sourceUrl || originalUrl,
+                false, // don't reset cancel flag between tracks
+                item.fallbackUrls || [],
+              );
+            } catch (err) {
+              console.error("Batch download track error:", err);
+              dlResult = { success: false, error: err?.message };
+            }
+
+            if (playlistCancelled) break;
+
+            if (dlResult && dlResult.success) {
+              if (targetBtn) {
+                const b = targetBtn.querySelector(".dl-badge");
+                if (b) {
+                  b.textContent = t("status-saved");
+                  b.style.backgroundColor = "";
+                  b.style.color = "";
+                }
+              }
+            } else {
+              currentFailedIndices.push(i);
+              if (targetBtn) {
+                const b = targetBtn.querySelector(".dl-badge");
+                if (b) {
+                  b.textContent = t("status-failed");
+                  b.style.backgroundColor = "var(--color-danger, #ef4444)";
+                  b.style.color = "#ffffff";
+                }
+              }
+            }
+
+            if (playlistCancelled) break;
+
+            // Smart delay between tracks: 1200ms normal, 2500ms on error to prevent rate limiting
+            const delayMs = dlResult && dlResult.success ? 1200 : 2500;
+            await new Promise((r) => setTimeout(r, delayMs));
+          }
+        } finally {
+          window._moriPlaylistDownloading = false;
+          releaseWakeLock();
+          // Clean up any uncompleted progress toast so nothing is left stuck on screen
+          const lingeringToasts = document.querySelectorAll(
+            ".download-progress-toast:not(.completed)",
+          );
+          lingeringToasts.forEach((el) => el.remove());
+
+          if (window.MoriMainBridge?.stopDownloadService) {
+            try {
+              window.MoriMainBridge.stopDownloadService();
+            } catch (_) {}
+          }
+        }
+
+        // Update failed indices list
+        failedIndices = currentFailedIndices;
+        isDownloadingAll = false;
+        allBtn.disabled = false;
+
+        if (playlistCancelled) {
+          showToast(
+            translations[currentLang]["toast-download-cancelled"] ||
+              "Download cancelled",
+          );
+          if (titleSpan) titleSpan.textContent = titleText;
+          if (badgeEl) {
+            badgeEl.textContent = countText;
+            badgeEl.style.backgroundColor = "";
+            badgeEl.style.color = "";
+          }
+        } else {
+          const failedCount = failedIndices.length;
+          const successfulTotal = total - failedCount;
+
+          if (failedCount === 0) {
+            // 100% SUCCESS
+            playCompletionSound();
+            const completeMsg = (
+              translations[currentLang]["download-all-complete"] ||
+              "All ${count} items downloaded!"
+            ).replace("${count}", total);
+            showToast(completeMsg);
+
+            if (window.MoriMainBridge?.showCompleteNotification) {
+              try {
+                window.MoriMainBridge.showCompleteNotification(
+                  result.title || "Playlist",
+                  t("notif-all-downloaded", { total }),
+                );
+              } catch (_) {}
+            }
+
+            if (titleSpan) titleSpan.textContent = titleText;
+            if (badgeEl) {
+              badgeEl.textContent = countText;
+              badgeEl.style.backgroundColor = "";
+              badgeEl.style.color = "";
+            }
+          } else {
+            // PARTIAL SUCCESS — Offer Retry Failed
+            const partialTemplate =
+              translations[currentLang]["download-partial-complete"] ||
+              "Downloaded ${success}/${total} items (${failed} failed)";
+            const summaryMsg = partialTemplate
+              .replace("${success}", successfulTotal)
+              .replace("${total}", total)
+              .replace("${failed}", failedCount);
+            showToast(summaryMsg);
+
+            const retryTitleTemplate =
+              translations[currentLang]["download-retry-failed"] ||
+              "Retry Failed (${count})";
+            const retryTitle = retryTitleTemplate.replace(
+              "${count}",
+              failedCount,
+            );
+
+            if (titleSpan) titleSpan.textContent = retryTitle;
+            if (badgeEl) {
+              badgeEl.textContent = t("status-retry");
+              badgeEl.style.backgroundColor = "var(--color-danger, #ef4444)";
+              badgeEl.style.color = "#ffffff";
+            }
+          }
+        }
+        playlistCancelled = false;
+        window._moriDownloadCancelled = false;
+      });
+
+      downloadList.appendChild(allBtn);
+    }
+
+    result.downloads.forEach((dl, index) => {
+      const btn = document.createElement("button");
+      btn.className = "dl-item";
+      btn.dataset.downloadIndex = String(index);
+      if (galleryResultIndices.has(index)) {
+        btn.classList.add("gallery-download-item");
+      }
+
+      // Clean UI display label by removing raw [MP3]/[MP4] tags
+      let cleanType = (dl.type || "")
+        .replace(/\s*\[(MP3|MP4|JPG|PNG|WEBP)\]/gi, "")
+        .trim();
+      const isTrackItem = /^\d+\.\s+/.test(cleanType);
+
+      if (isTrackItem) {
+        btn.classList.add("dl-track-item");
+        btn.innerHTML = `<span class="track-title">${escapeHtml(cleanType)}</span><div class="dl-badge">${translations[currentLang]["label-download"]}</div>`;
+      } else {
+        const label = dl.quality ? `${cleanType} - ${dl.quality}` : cleanType;
+        btn.innerHTML = `<div>${translations[currentLang]["label-download"]} ${index + 1}</div><span>${escapeHtml(label)}</span>`;
+      }
+
+      btn.addEventListener("click", async (e) => {
+        const res = await startNativeDownload(
+          dl.url,
+          dl.type,
+          result.title,
+          e.currentTarget,
+          result.sourceUrl || originalUrl,
+          true,
+          dl.fallbackUrls || [],
+        );
+        if (res?.success) {
+          markGalleryDownloaded(index);
+          updateGallerySelectionUI();
+        }
+        if (res && res.success && failedIndices.includes(index)) {
+          failedIndices = failedIndices.filter((idx) => idx !== index);
+          if (allBtn) {
+            const titleSpan = allBtn.querySelector(".dl-all-title");
+            const badgeEl = allBtn.querySelector(".dl-all-badge");
+            if (failedIndices.length === 0) {
+              if (titleSpan) titleSpan.textContent = titleText;
+              if (badgeEl) {
+                badgeEl.textContent = countText;
+                badgeEl.style.backgroundColor = "";
+                badgeEl.style.color = "";
+              }
+            } else {
+              if (titleSpan) {
+                const retryTitleTemplate =
+                  translations[currentLang]["download-retry-failed"] ||
+                  "Retry Failed (${count})";
+                titleSpan.textContent = retryTitleTemplate.replace(
+                  "${count}",
+                  failedIndices.length,
+                );
+              }
+            }
+          }
+        }
+      });
+      downloadList.appendChild(btn);
+    });
+  }
+
+  resultSection?.classList.remove("hidden");
+  resultSection?.scrollIntoView({ behavior: "smooth" });
+
+  return { slideData, currentSlideIndex };
+}
+export async function exportGalleryToPdf(title, items) {
+  try {
+    showToast(translations[currentLang]["pdf-toast-starting"]);
+
+    // Acquire Wake Lock & Start Native Foreground Service for background protection
+    if (typeof requestWakeLock === "function") requestWakeLock();
+    if (window.MoriMainBridge?.startDownloadService) {
+      try {
+        window.MoriMainBridge.startDownloadService("Exporting PDF Gallery...");
+      } catch (e) {}
+    }
+
+    const { PDFDocument } = window.PDFLib;
+    const pdfDoc = await PDFDocument.create();
+
+    // Process in smaller chunks for better stability
+    const chunkSize = 2;
+    let processedCount = 0;
+
+    for (let i = 0; i < items.length; i += chunkSize) {
+      const chunk = items.slice(i, i + chunkSize);
+      const downloadPromises = chunk.map((item) => {
+        let referer = "https://www.google.com/";
+        if (
+          item.url.includes("snaptik.app") ||
+          item.url.includes("tikdownloader.io") ||
+          item.url.includes("snapcdn.app")
+        )
+          referer = "https://tikdownloader.io/";
+        if (item.url.includes("instagram.com"))
+          referer = "https://www.instagram.com/";
+        if (item.url.includes("pixiv.net") || item.url.includes("pximg.net"))
+          referer = "https://www.pixiv.net/";
+
+        const tauriInvoke =
+          window.__TAURI__?.core?.invoke ||
+          window.__TAURI_INTERNALS__?.invoke ||
+          window.__TAURI__?.invoke;
+
+        if (CapacitorHttp) {
+          return CapacitorHttp.get({
+            url: item.url,
+            responseType: "arraybuffer",
+            connectTimeout: 30000,
+            readTimeout: 60000,
+            headers: { Referer: referer, "User-Agent": CHROME_UA },
+          }).catch((err) => ({ status: 0, error: err }));
+        } else if (tauriInvoke) {
+          return tauriInvoke("tauri_fetch_bytes", {
+            url: item.url,
+            headers: { Referer: referer, "User-Agent": CHROME_UA },
+          })
+            .then((bytes) => {
+              if (bytes && bytes.length > 0) {
+                const arr = new Uint8Array(bytes);
+                return { status: 200, data: arr.buffer };
+              }
+              throw new Error("Empty image bytes");
+            })
+            .catch((err) => ({ status: 0, error: err }));
+        } else {
+          return fetch(item.url, { headers: { Referer: referer } })
+            .then((res) => res.arrayBuffer())
+            .then((buf) => ({ status: 200, data: buf }))
+            .catch((err) => ({ status: 0, error: err }));
+        }
+      });
+
+      const results = await Promise.all(downloadPromises);
+
+      for (let j = 0; j < results.length; j++) {
+        const res = results[j];
+        const itemIndex = i + j;
+        const item = chunk[j];
+
+        try {
+          if (res.status !== 200) throw new Error("Download failed");
+
+          let imgBytes;
+          if (typeof res.data === "string") {
+            const binaryString = atob(res.data);
+            imgBytes = new Uint8Array(binaryString.length);
+            for (let k = 0; k < binaryString.length; k++) {
+              imgBytes[k] = binaryString.charCodeAt(k);
+            }
+          } else {
+            imgBytes = new Uint8Array(res.data);
+          }
+
+          const isPng =
+            item.url.toLowerCase().endsWith(".png") ||
+            (res.headers &&
+              res.headers["Content-Type"] &&
+              res.headers["Content-Type"].includes("png"));
+
+          const compressImage = async (bytes, isOriginalPng) => {
+            return new Promise((resolve) => {
+              const blob = new Blob([bytes], {
+                type: isOriginalPng ? "image/png" : "image/jpeg",
+              });
+              const url = URL.createObjectURL(blob);
+              const img = new Image();
+              img.onload = () => {
+                let width = img.width;
+                let height = img.height;
+                const MAX_WIDTH = 1200;
+
+                if (width > MAX_WIDTH) {
+                  height = Math.round(height * (MAX_WIDTH / width));
+                  width = MAX_WIDTH;
+                }
+
+                const canvas = document.createElement("canvas");
+                canvas.width = width;
+                canvas.height = height;
+                const ctx = canvas.getContext("2d", { alpha: false });
+                ctx.fillStyle = "#FFFFFF";
+                ctx.fillRect(0, 0, width, height);
+                ctx.drawImage(img, 0, 0, width, height);
+
+                const dataUrl = canvas.toDataURL("image/jpeg", 0.75);
+                URL.revokeObjectURL(url);
+
+                const base64 = dataUrl.split(",")[1];
+                const binaryString = atob(base64);
+                const compressedBytes = new Uint8Array(binaryString.length);
+                for (let k = 0; k < binaryString.length; k++) {
+                  compressedBytes[k] = binaryString.charCodeAt(k);
+                }
+
+                // Aggressive GC
+                canvas.width = 0;
+                canvas.height = 0;
+                resolve({ bytes: compressedBytes, isJpeg: true });
+              };
+              img.onerror = () => {
+                URL.revokeObjectURL(url);
+                resolve({ bytes, isJpeg: false });
+              };
+              img.src = url;
+            });
+          };
+
+          const optimized = await compressImage(imgBytes, isPng);
+
+          // Allow GC of original large buffer
+          imgBytes = null;
+          res.data = null;
+
+          let image;
+          try {
+            if (optimized.isJpeg) {
+              image = await pdfDoc.embedJpg(optimized.bytes);
+            } else {
+              if (isPng) image = await pdfDoc.embedPng(optimized.bytes);
+              else image = await pdfDoc.embedJpg(optimized.bytes);
+            }
+          } catch (e) {
+            // Fallback for misidentified formats
+            try {
+              if (isPng) image = await pdfDoc.embedJpg(optimized.bytes);
+              else image = await pdfDoc.embedPng(optimized.bytes);
+            } catch (e2) {
+              console.warn(
+                `Skipping image ${itemIndex + 1}: Unsupported format`,
+              );
+              continue;
+            }
+          }
+
+          const { width, height } = image.scale(1);
+          const page = pdfDoc.addPage([width, height]);
+          page.drawImage(image, { x: 0, y: 0, width, height });
+          processedCount++;
+
+          if (processedCount % 5 === 0 || processedCount === items.length) {
+            let msg = translations[currentLang]["pdf-toast-processing"]
+              .replace("${count}", processedCount)
+              .replace("${total}", items.length);
+            showToast(msg);
+          }
+        } catch (e) {
+          console.error(`Page ${itemIndex + 1} failed:`, e);
+        }
+      }
+    }
+
+    if (processedCount === 0)
+      throw new Error(translations[currentLang]["pdf-error-no-images"]);
+
+    showToast(translations[currentLang]["pdf-toast-finalizing"]);
+    const pdfBytes = await pdfDoc.save();
+
+    const fileName = `${(title || "Gallery").replace(/[^\w\s]/gi, "").trim()}_${Date.now()}.pdf`;
+
+    // Dynamic folder structure for PDF exports
+    let pdfSubfolder = localStorage.getItem("mori_download_path") || "Mori";
+    if (localStorage.getItem("mori_auto_folder") !== "false") {
+      const firstUrl = (items[0]?.url || "").toLowerCase();
+      let platformFolder = "Other";
+      if (
+        firstUrl.includes("pixiv") ||
+        firstUrl.includes("pximg") ||
+        firstUrl.includes("pixiv.me")
+      )
+        platformFolder = "Pixiv";
+      else if (
+        firstUrl.includes("instagram") ||
+        firstUrl.includes("instagr.am")
+      )
+        platformFolder = "Instagram";
+      else if (firstUrl.includes("pinterest") || firstUrl.includes("pin.it"))
+        platformFolder = "Pinterest";
+      else if (
+        firstUrl.includes("rednote") ||
+        firstUrl.includes("xiaohongshu") ||
+        firstUrl.includes("xhslink")
+      )
+        platformFolder = "RedNote";
+      else if (
+        firstUrl.includes("tiktok") ||
+        firstUrl.includes("douyin") ||
+        firstUrl.includes("iesdouyin")
+      )
+        platformFolder = "TikTok";
+      else if (
+        firstUrl.includes("twitter") ||
+        firstUrl.includes("x.com") ||
+        firstUrl.includes("t.co")
+      )
+        platformFolder = "Twitter";
+      else if (
+        firstUrl.includes("facebook") ||
+        firstUrl.includes("fb.watch") ||
+        firstUrl.includes("fb.com")
+      )
+        platformFolder = "Facebook";
+      else if (
+        firstUrl.includes("threads.net") ||
+        firstUrl.includes("threads.com")
+      )
+        platformFolder = "Threads";
+      else if (
+        firstUrl.includes("bilibili") ||
+        firstUrl.includes("b23.tv") ||
+        firstUrl.includes("bili.im")
+      )
+        platformFolder = "Bilibili";
+
+      pdfSubfolder = `${pdfSubfolder}/${platformFolder}`;
+    }
+
+    const targetPdfPath = `Download/${pdfSubfolder}/${fileName}`;
+
+    if (window.Capacitor?.isNativePlatform?.()) {
+      showToast(translations[currentLang]["pdf-toast-saving"]);
+
+      const blob = new Blob([pdfBytes], { type: "application/pdf" });
+      const reader = new FileReader();
+      reader.onloadend = async () => {
+        const base64 = reader.result.split(",")[1];
+        try {
+          await Filesystem.writeFile({
+            path: targetPdfPath,
+            data: base64,
+            directory: "EXTERNAL_STORAGE",
+            recursive: true,
+          });
+          showToast(translations[currentLang]["pdf-toast-saved"]);
+
+          if (window.MoriMainBridge?.showCompleteNotification) {
+            try {
+              window.MoriMainBridge.showCompleteNotification(
+                "PDF Gallery Complete ✓",
+                targetPdfPath,
+              );
+            } catch (e) {}
+          }
+        } catch (fsErr) {
+          console.error("FS Error:", fsErr);
+          showToast(translations[currentLang]["toast-storage-error"]);
+        }
+      };
+      reader.onerror = () =>
+        showToast(translations[currentLang]["toast-memory-error"]);
+      reader.readAsDataURL(blob);
+    } else {
+      const tauriInvoke =
+        window.__TAURI__?.core?.invoke ||
+        window.__TAURI_INTERNALS__?.invoke ||
+        window.__TAURI__?.invoke;
+
+      let savedTauri = false;
+      if (tauriInvoke) {
+        try {
+          const customFolder =
+            localStorage.getItem("mori_download_path") || "Mori";
+          await tauriInvoke("tauri_save_bytes_file", {
+            bytes: Array.from(pdfBytes),
+            filename: fileName,
+            folder: customFolder,
+          });
+          savedTauri = true;
+          showToast(
+            translations[currentLang]["pdf-toast-saved"] ||
+              "PDF saved to Mori folder!",
+          );
+        } catch (e) {
+          console.warn(
+            "Tauri save PDF failed, falling back to browser download:",
+            e,
+          );
+        }
+      }
+
+      if (!savedTauri) {
+        const blob = new Blob([pdfBytes], { type: "application/pdf" });
+        const link = document.createElement("a");
+        link.href = URL.createObjectURL(blob);
+        link.download = fileName;
+        link.click();
+        showToast(translations[currentLang]["toast-pdf-downloaded"]);
+      }
+    }
+  } catch (err) {
+    console.error("PDF Export failed", err);
+    showToast(
+      translations[currentLang]["label-error"] +
+        ": " +
+        (err.message.includes("memory") ? "Out of memory" : err.message),
+    );
+    if (window.MoriMainBridge?.showFailedNotification) {
+      try {
+        window.MoriMainBridge.showFailedNotification("PDF Export", err.message);
+      } catch (e) {}
+    }
+  } finally {
+    if (typeof releaseWakeLock === "function") releaseWakeLock();
+    if (window.MoriMainBridge?.stopDownloadService) {
+      try {
+        window.MoriMainBridge.stopDownloadService();
+      } catch (e) {}
+    }
+  }
+}

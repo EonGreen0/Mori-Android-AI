@@ -1,0 +1,1234 @@
+/* Planning canvas — freeform storyboard / shoot planning workspace */
+.inspiration-mode-switch {
+  display: inline-flex;
+  align-items: center;
+  padding: 3px;
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  background: var(--surface);
+}
+
+.inspiration-mode-btn {
+  min-height: 32px;
+  padding: 6px 11px;
+  border: 0;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-secondary);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.inspiration-mode-btn.active {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.planner-toolbar {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 12px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-xl);
+  background: var(--surface);
+}
+
+.planner-toolbar-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+}
+
+.planner-toolbar-heading strong {
+  font-size: 0.78rem;
+}
+
+.planner-project-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid color-mix(in srgb, var(--primary) 28%, transparent);
+  border-radius: var(--radius-l);
+  background: color-mix(in srgb, var(--bg-color) 72%, transparent);
+}
+
+.planner-project-copy {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.planner-project-copy strong {
+  font-size: 0.76rem;
+  line-height: 1.3;
+}
+
+.planner-project-copy span {
+  color: var(--text-secondary);
+  font-size: 0.61rem;
+}
+
+.planner-project-actions {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+.planner-project-actions button {
+  min-height: 34px;
+  padding: 7px 9px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-l);
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.66rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.planner-project-actions button:hover:not(:disabled) {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.planner-project-actions button:disabled {
+  opacity: 0.42;
+  cursor: not-allowed;
+}
+
+.planner-sync-status {
+  min-height: 18px;
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  line-height: 1.35;
+}
+
+.planner-sync-status[data-state="working"] {
+  color: var(--primary);
+}
+
+.planner-sync-status[data-state="error"] {
+  color: #d94b4b;
+}
+
+.planner-export-result {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding-top: 8px;
+  border-top: 1px solid color-mix(in srgb, var(--primary) 18%, transparent);
+}
+
+.planner-export-result > span {
+  color: var(--text-secondary);
+  font-size: 0.6rem;
+  font-weight: 700;
+}
+
+.planner-export-path {
+  width: 100%;
+  padding: 7px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  border-radius: var(--radius-m);
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.61rem;
+  line-height: 1.35;
+  text-align: left;
+  overflow-wrap: anywhere;
+  cursor: copy;
+}
+
+.planner-export-result-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px;
+}
+
+.planner-export-result-actions button {
+  min-height: 32px;
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 48%, transparent);
+  border-radius: var(--radius-m);
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.62rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.planner-export-result-actions button:hover {
+  background: color-mix(in srgb, var(--primary) 12%, transparent);
+}
+
+.planner-readonly #plannerAddTextBtn,
+.planner-readonly #plannerAddGroupBtn,
+.planner-readonly #plannerClearBtn,
+.planner-readonly .planner-style-tools,
+.planner-readonly #inspirationAddAlbumToPlannerBtn,
+.planner-readonly #plannerExportPackageBtn {
+  display: none;
+}
+
+.planner-readonly .planner-node,
+.planner-readonly .planner-edge-hit {
+  pointer-events: none;
+}
+
+.planner-readonly.planner-android-limited-write .planner-node-text,
+.planner-readonly.planner-android-limited-write .planner-node-text .planner-text-content,
+.planner-readonly.planner-android-limited-write .planner-node-image,
+.planner-readonly.planner-android-limited-write .planner-node-group {
+  pointer-events: auto;
+}
+
+.planner-readonly.planner-android-limited-write .planner-node-text,
+.planner-readonly.planner-android-limited-write .planner-node-text .planner-text-content {
+  cursor: text;
+}
+
+.planner-readonly.planner-android-limited-write .planner-node-image,
+.planner-readonly.planner-android-limited-write .planner-node-group {
+  cursor: move;
+}
+
+.planner-readonly .planner-connector-handle,
+.planner-readonly .planner-resize-handle,
+.planner-readonly .planner-rotate-handle,
+.planner-readonly .planner-selection-toolbar,
+.planner-readonly #plannerCaptureFrameBtn {
+  display: none !important;
+}
+
+.planner-readonly.planner-android-limited-write .planner-selection-toolbar:not(.hidden) {
+  display: flex !important;
+}
+
+.planner-readonly.planner-android-limited-write .planner-node-text.is-selected .planner-resize-handle,
+.planner-readonly.planner-android-limited-write .planner-node-image.is-selected .planner-resize-handle,
+.planner-readonly.planner-android-limited-write .planner-node-image.is-selected .planner-rotate-handle {
+  display: block !important;
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.planner-readonly .planner-viewport {
+  cursor: grab;
+}
+
+#plannerSelectionCount {
+  min-width: 24px;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--primary);
+  border-radius: 999px;
+  font-size: 0.66rem;
+  font-weight: 700;
+}
+
+.planner-toolbar > button {
+  min-height: 38px;
+  padding: 8px 10px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-l);
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-align: left;
+  cursor: pointer;
+}
+
+.planner-toolbar > button:hover:not(:disabled) {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.planner-toolbar > button:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.planner-help {
+  margin-top: auto;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--primary) 20%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.63rem;
+  line-height: 1.5;
+}
+
+.planner-mobile-controls {
+  position: absolute;
+  z-index: 80;
+  top: calc(10px + env(safe-area-inset-top, 0px));
+  left: 10px;
+  right: 10px;
+  display: flex;
+  justify-content: flex-start;
+  gap: 6px;
+  overflow-x: auto;
+  scrollbar-width: none;
+  pointer-events: none;
+}
+.planner-mobile-controls::-webkit-scrollbar { display: none; }
+
+.planner-mobile-controls.hidden {
+  display: none;
+}
+
+.planner-mobile-controls button {
+  flex: 0 0 auto;
+  min-height: 42px;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 52%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 90%, transparent);
+  color: var(--text-main);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 700;
+  pointer-events: auto;
+}
+
+.planner-mobile-controls button:first-child {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.planner-viewport {
+  position: relative;
+  min-height: 520px;
+  height: min(74vh, 820px);
+  overflow: hidden;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-xl);
+  outline: none;
+  cursor: crosshair;
+  touch-action: none;
+  background-color: var(--bg-color);
+  background-image:
+    linear-gradient(color-mix(in srgb, var(--primary) 7%, transparent) 1px, transparent 1px),
+    linear-gradient(90deg, color-mix(in srgb, var(--primary) 7%, transparent) 1px, transparent 1px);
+  background-size: 24px 24px;
+}
+
+.planner-viewport:focus-visible {
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--primary) 22%, transparent);
+}
+
+.planner-viewport.is-panning {
+  cursor: grabbing;
+}
+
+.planner-viewport.is-external-drag {
+  box-shadow:
+    inset 0 0 0 3px var(--primary),
+    0 0 0 3px color-mix(in srgb, var(--primary) 16%, transparent);
+}
+
+.planner-viewport.is-external-drag::after {
+  content: "+";
+  position: absolute;
+  z-index: 50;
+  inset: 18px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed var(--primary);
+  border-radius: calc(var(--radius-xl) - 6px);
+  color: var(--primary);
+  font-size: 3rem;
+  font-weight: 700;
+  background: color-mix(in srgb, var(--surface) 78%, transparent);
+  pointer-events: none;
+}
+
+.planner-stage {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+  transform-origin: 0 0;
+  will-change: transform;
+  z-index: 1;
+}
+
+.planner-mobile-sync-status {
+  flex: 1 0 100%;
+  padding: 5px 8px;
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  color: var(--text-secondary);
+  font-size: 0.66rem;
+  line-height: 1.4;
+}
+
+.planner-mobile-sync-status[data-state="error"] {
+  color: var(--text-main);
+}
+
+html.is-android .planner-stage {
+  will-change: auto;
+}
+
+.planner-nodes {
+  position: absolute;
+  inset: 0;
+  width: 1px;
+  height: 1px;
+  overflow: visible;
+}
+
+.planner-edges {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.planner-edge-path {
+  fill: none;
+  stroke: color-mix(in srgb, var(--primary) 62%, transparent);
+  stroke-width: 2.5;
+  vector-effect: non-scaling-stroke;
+  transition: stroke 0.12s ease, stroke-width 0.12s ease;
+}
+
+.planner-edge-path.is-selected {
+  stroke: var(--primary);
+  stroke-width: 4;
+}
+
+.planner-edge-path.is-preview {
+  stroke-dasharray: 7 6;
+  opacity: 0.85;
+}
+
+.planner-edge-hit {
+  fill: none;
+  stroke: transparent;
+  stroke-width: 18;
+  vector-effect: non-scaling-stroke;
+  pointer-events: stroke;
+  cursor: pointer;
+}
+
+.planner-node {
+  position: absolute;
+  z-index: 2;
+  border: 2px solid transparent;
+  border-radius: var(--radius-l);
+  cursor: grab;
+  user-select: none;
+  transition:
+    border-color 0.12s ease,
+    box-shadow 0.12s ease;
+}
+
+.planner-node:active {
+  cursor: grabbing;
+}
+
+.planner-node.is-selected {
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.planner-node-image {
+  overflow: visible;
+  background: transparent;
+}
+
+.planner-node-image img {
+  display: block;
+  width: 100%;
+  height: auto;
+  max-height: none;
+  object-fit: contain;
+  border-radius: calc(var(--radius-l) - 2px);
+  background: var(--surface);
+  pointer-events: none;
+}
+
+.planner-node-text {
+  min-height: 42px;
+  padding: 9px 11px;
+  background: var(--surface);
+  border-color: color-mix(in srgb, var(--primary) 24%, transparent);
+  box-shadow: 3px 3px 0 color-mix(in srgb, var(--primary) 9%, transparent);
+}
+
+.planner-node-text.is-selected {
+  border-color: var(--primary);
+}
+
+.planner-node-group {
+  z-index: 1;
+  min-width: 180px;
+  min-height: 120px;
+  border: 2px dashed color-mix(in srgb, var(--primary) 36%, transparent);
+  border-radius: calc(var(--radius-xl) + 4px);
+  background: color-mix(in srgb, var(--surface) 44%, transparent);
+  box-shadow: none;
+}
+
+.planner-node-group.is-selected {
+  border-style: solid;
+  border-color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 4%, var(--surface));
+}
+
+.planner-group-label {
+  position: absolute;
+  top: -15px;
+  left: 14px;
+  max-width: calc(100% - 28px);
+  padding: 4px 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 30%, transparent);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-main);
+  font-size: 0.72rem;
+  font-weight: 700;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transform: rotate(var(--group-counter-rotation, 0deg)) scale(var(--group-label-scale, 1)) scale(var(--planner-readable-scale, 1));
+  transform-origin: left center;
+}
+
+.planner-node-group.is-editing .planner-group-label {
+  outline: 2px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.planner-text-content {
+  min-height: 24px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  color: var(--text-main);
+  font-size: 1rem;
+  font-weight: 500;
+  line-height: 1.45;
+  cursor: inherit;
+}
+
+.planner-node.is-editing {
+  cursor: text;
+}
+
+.planner-node.is-editing .planner-text-content {
+  outline: none;
+  cursor: text;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.planner-connector-handle,
+.planner-resize-handle,
+.planner-rotate-handle {
+  position: absolute;
+  z-index: 12;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.1s ease, transform 0.1s ease;
+}
+
+.planner-connector-handle {
+  width: 14px;
+  height: 14px;
+  padding: 0;
+  border: 2px solid var(--primary);
+  border-radius: 50%;
+  background: var(--bg-color);
+  cursor: crosshair;
+}
+
+.planner-node:hover .planner-connector-handle,
+.planner-node.is-selected .planner-connector-handle,
+.planner-node.is-selected .planner-resize-handle,
+.planner-node.is-selected .planner-rotate-handle {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.planner-connector-handle:hover {
+  background: var(--primary);
+  box-shadow: 0 0 0 4px color-mix(in srgb, var(--primary) 14%, transparent);
+}
+
+.planner-connector-handle.is-top {
+  top: -9px;
+  left: 50%;
+  transform: translateX(-50%) scale(var(--planner-control-scale, 1));
+}
+
+.planner-connector-handle.is-right {
+  top: 50%;
+  right: -9px;
+  transform: translateY(-50%) scale(var(--planner-control-scale, 1));
+}
+
+.planner-connector-handle.is-bottom {
+  bottom: -9px;
+  left: 50%;
+  transform: translateX(-50%) scale(var(--planner-control-scale, 1));
+}
+
+.planner-connector-handle.is-left {
+  top: 50%;
+  left: -9px;
+  transform: translateY(-50%) scale(var(--planner-control-scale, 1));
+}
+
+.planner-resize-handle {
+  width: 15px;
+  height: 15px;
+  padding: 0;
+  border: 2px solid var(--bg-color);
+  border-radius: 50%;
+  background: var(--primary);
+  transform: scale(var(--planner-control-scale, 1));
+  transform-origin: center;
+}
+
+.planner-resize-handle.is-nw {
+  left: -8px;
+  top: -8px;
+  cursor: nwse-resize;
+}
+
+.planner-resize-handle.is-ne {
+  right: -8px;
+  top: -8px;
+  cursor: nesw-resize;
+}
+
+.planner-resize-handle.is-sw {
+  left: -8px;
+  bottom: -8px;
+  cursor: nesw-resize;
+}
+
+.planner-resize-handle.is-se {
+  right: -8px;
+  bottom: -8px;
+  cursor: nwse-resize;
+}
+
+.planner-rotate-handle {
+  left: 50%;
+  top: -50px;
+  width: 38px;
+  height: 38px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 58%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  color: var(--text-main);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  font-size: 1.35rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: grab;
+  touch-action: none;
+  transform: translateX(-50%) rotate(var(--counter-rotation, 0deg)) scale(var(--planner-control-scale, 1));
+  transform-origin: center;
+}
+
+.planner-rotate-handle:active {
+  cursor: grabbing;
+}
+
+.planner-multi-transform {
+  position: absolute;
+  z-index: 18;
+  box-sizing: border-box;
+  border: 2px solid var(--primary);
+  border-radius: 12px;
+  pointer-events: none;
+}
+
+.planner-multi-transform.hidden {
+  display: none;
+}
+
+.planner-stage.has-multi-image-selection .planner-node.is-selected .planner-resize-handle,
+.planner-stage.has-multi-image-selection .planner-node.is-selected .planner-rotate-handle,
+.planner-stage.has-multi-image-selection .planner-node.is-selected .planner-connector-handle {
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
+.planner-multi-resize-handle,
+.planner-multi-rotate-handle {
+  position: absolute;
+  z-index: 20;
+  pointer-events: auto;
+  touch-action: none;
+}
+
+.planner-multi-resize-handle {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 3px solid var(--bg-color);
+  border-radius: 50%;
+  background: var(--primary);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.18);
+  transform: scale(var(--planner-control-scale, 1));
+  transform-origin: center;
+}
+
+.planner-multi-resize-handle.is-nw {
+  left: -10px;
+  top: -10px;
+  cursor: nwse-resize;
+}
+
+.planner-multi-resize-handle.is-ne {
+  right: -10px;
+  top: -10px;
+  cursor: nesw-resize;
+}
+
+.planner-multi-resize-handle.is-sw {
+  left: -10px;
+  bottom: -10px;
+  cursor: nesw-resize;
+}
+
+.planner-multi-resize-handle.is-se {
+  right: -10px;
+  bottom: -10px;
+  cursor: nwse-resize;
+}
+
+.planner-multi-rotate-handle {
+  left: 50%;
+  top: -54px;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  border: 1px solid color-mix(in srgb, var(--primary) 58%, transparent);
+  border-radius: 50%;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  color: var(--text-main);
+  box-shadow: 0 8px 20px rgba(0, 0, 0, 0.18);
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1;
+  cursor: grab;
+  transform: translateX(-50%) scale(var(--planner-control-scale, 1));
+  transform-origin: center;
+}
+
+.planner-multi-rotate-handle:active {
+  cursor: grabbing;
+}
+
+.planner-image-comment-shell {
+  position: absolute;
+  top: calc(100% + 12px);
+  left: 50%;
+  z-index: 14;
+  display: none;
+  align-items: flex-start;
+  gap: 8px;
+  width: max-content;
+  max-width: min(620px, 80vw);
+  transform: translateX(-50%) rotate(var(--counter-rotation, 0deg)) scale(var(--comment-scale, 1)) scale(var(--planner-readable-scale, 1));
+  transform-origin: top center;
+}
+
+.planner-node-image.is-selected .planner-image-comment-shell,
+.planner-image-comment-shell[data-empty="false"] {
+  display: flex;
+}
+
+.planner-image-comment {
+  width: max-content;
+  min-width: 84px;
+  max-width: min(520px, 70vw);
+  min-height: 34px;
+  padding: 8px 11px;
+  border: 1px solid color-mix(in srgb, var(--primary) 16%, transparent);
+  border-radius: 12px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  color: var(--text-secondary);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  font-size: var(--planner-comment-font-size, 17px);
+  line-height: 1.48;
+  text-align: left;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  user-select: text;
+  -webkit-user-select: text;
+  cursor: text;
+}
+
+.planner-image-comment[data-empty="true"] {
+  color: var(--text-muted, var(--text-secondary));
+  font-style: italic;
+}
+
+.planner-image-comment.is-editing {
+  outline: 2px solid color-mix(in srgb, var(--primary) 28%, transparent);
+  background: var(--surface);
+  color: var(--text-main);
+}
+
+.planner-comment-size-control {
+  display: none;
+  align-items: center;
+  gap: 4px;
+  padding: 4px;
+  border: 1px solid color-mix(in srgb, var(--primary) 22%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.08);
+  white-space: nowrap;
+}
+
+.planner-node-image.is-selected .planner-comment-size-control {
+  display: inline-flex;
+}
+
+.planner-comment-size-control button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.7rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planner-comment-size-control button:hover {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.planner-comment-size-value {
+  min-width: 24px;
+  color: var(--text-secondary);
+  font-size: 0.68rem;
+  font-weight: 800;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.planner-selection-toolbar {
+  position: absolute;
+  z-index: 80;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 42px;
+  max-width: min(560px, calc(100% - 24px));
+  padding: 6px 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, transparent);
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.16);
+  backdrop-filter: blur(14px);
+  transform: translate(-50%, -100%);
+  transform-origin: center bottom;
+  white-space: nowrap;
+}
+
+.planner-selection-toolbar.hidden {
+  display: none;
+}
+
+.planner-capture-frame-btn {
+  position: absolute;
+  right: 18px;
+  bottom: 18px;
+  z-index: 90;
+  min-height: 42px;
+  padding: 9px 14px;
+  border: 1px solid color-mix(in srgb, var(--primary) 42%, transparent);
+  border-radius: 999px;
+  background: var(--primary);
+  color: var(--on-primary);
+  box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+  font: inherit;
+  font-size: 0.72rem;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.planner-capture-frame-btn:hover {
+  transform: translateY(-1px);
+}
+
+.planner-capture-frame-btn:disabled {
+  opacity: 0.55;
+  cursor: wait;
+}
+
+.planner-selection-toolbar button {
+  min-height: 30px;
+  padding: 5px 9px;
+  border: 1px solid color-mix(in srgb, var(--primary) 34%, transparent);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text-main);
+  font: inherit;
+  font-size: 0.64rem;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.planner-selection-toolbar button:hover {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+.planner-selection-toolbar button.danger:hover {
+  background: #b42318;
+  border-color: #b42318;
+  color: #fff;
+}
+
+.planner-selection-icon {
+  width: 30px;
+  min-width: 30px;
+  padding: 0 !important;
+  font-size: 1rem !important;
+  line-height: 1;
+}
+
+.planner-rotation-control {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 1fr) 42px;
+  align-items: center;
+  gap: 6px;
+  min-width: 230px;
+  color: var(--text-secondary);
+  font-size: 0.62rem;
+  font-weight: 700;
+}
+
+.planner-rotation-control input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--primary);
+}
+
+#plannerRotationValue {
+  color: var(--text-main);
+  font-size: 0.66rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.planner-style-tools {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid color-mix(in srgb, var(--primary) 24%, transparent);
+  border-radius: var(--radius-l);
+}
+
+.planner-style-tools label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 7px;
+  color: var(--text-secondary);
+  font-size: 0.64rem;
+  font-weight: 700;
+}
+
+.planner-style-tools input[type="color"] {
+  width: 30px;
+  height: 24px;
+  padding: 2px;
+  border: 1px solid var(--primary);
+  border-radius: 6px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.planner-font-size-tool {
+  grid-column: 1 / -1;
+  display: grid !important;
+  grid-template-columns: auto 1fr 32px;
+  align-items: center;
+}
+
+.planner-font-size-tool input[type="range"] {
+  width: 100%;
+  min-width: 0;
+  accent-color: var(--primary);
+}
+
+#plannerFontSizeValue {
+  color: var(--text-main);
+  font-size: 0.68rem;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+
+.planner-style-tools input:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+.planner-marquee {
+  position: absolute;
+  z-index: 20;
+  pointer-events: none;
+  border: 1px solid var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+
+.planner-empty {
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 28px;
+  color: var(--text-secondary);
+  font-size: 0.78rem;
+  text-align: center;
+  pointer-events: none;
+}
+
+.planner-empty.hidden {
+  display: none;
+}
+
+html.is-desktop #inspirationPage.planner-mode .planner-toolbar {
+  grid-column: 1;
+  grid-row: 3;
+  min-height: 0;
+}
+
+html.is-desktop #inspirationPage.planner-mode .planner-viewport {
+  grid-column: 2;
+  grid-row: 3;
+  min-width: 0;
+  height: calc(100vh - 138px);
+  min-height: 620px;
+}
+
+html.planner-android-fullscreen,
+html.planner-android-fullscreen body {
+  width: 100%;
+  height: 100%;
+  min-height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
+html.planner-android-fullscreen .app-container {
+  width: 100vw;
+  max-width: none;
+  height: 100dvh;
+  min-height: 100dvh;
+  padding: 0;
+  overflow: hidden;
+}
+
+html.planner-android-fullscreen .bottom-nav {
+  display: none !important;
+}
+
+html.planner-android-fullscreen #inspirationPage {
+  position: fixed;
+  z-index: 1200;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--bg-color);
+}
+
+html.planner-android-fullscreen #inspirationPage .inspiration-page-header,
+html.planner-android-fullscreen #inspirationPage > .inspiration-cloud-sync,
+html.planner-android-fullscreen #inspirationPage > .inspiration-toolbar,
+html.planner-android-fullscreen #inspirationPage > .planner-toolbar {
+  display: none !important;
+}
+
+html.planner-android-fullscreen #plannerViewport {
+  position: absolute;
+  inset: 0;
+  width: 100vw;
+  height: 100dvh !important;
+  min-height: 0 !important;
+  margin: 0;
+  border: 0;
+  border-radius: 0;
+}
+
+html.planner-android-fullscreen #plannerMobileControls {
+  display: flex;
+}
+
+html.planner-android-fullscreen #plannerEmpty {
+  padding-top: calc(72px + env(safe-area-inset-top, 0px));
+}
+
+@media (max-width: 760px) {
+  .inspiration-mode-switch {
+    width: 100%;
+  }
+
+  .inspiration-mode-btn {
+    flex: 1;
+  }
+
+  .planner-toolbar {
+    flex-direction: row;
+    flex-wrap: wrap;
+  }
+
+  .planner-toolbar-heading {
+    width: 100%;
+  }
+
+  .planner-toolbar > button {
+    flex: 1 1 42%;
+    text-align: center;
+  }
+
+  .planner-help {
+    width: 100%;
+  }
+
+  .planner-viewport {
+    height: 66vh;
+    min-height: 420px;
+  }
+
+  .planner-rotate-handle {
+    top: -60px;
+    width: 48px;
+    height: 48px;
+    font-size: 1.6rem;
+  }
+
+  .planner-resize-handle {
+    width: 22px;
+    height: 22px;
+    border-width: 3px;
+  }
+
+  .planner-resize-handle.is-nw {
+    left: -12px;
+    top: -12px;
+  }
+
+  .planner-resize-handle.is-ne {
+    right: -12px;
+    top: -12px;
+  }
+
+  .planner-resize-handle.is-sw {
+    left: -12px;
+    bottom: -12px;
+  }
+
+  .planner-resize-handle.is-se {
+    right: -12px;
+    bottom: -12px;
+  }
+
+  .planner-multi-rotate-handle {
+    top: -64px;
+    width: 50px;
+    height: 50px;
+    font-size: 1.7rem;
+  }
+
+  .planner-multi-resize-handle {
+    width: 24px;
+    height: 24px;
+    border-width: 3px;
+  }
+
+  .planner-multi-resize-handle.is-nw {
+    left: -13px;
+    top: -13px;
+  }
+
+  .planner-multi-resize-handle.is-ne {
+    right: -13px;
+    top: -13px;
+  }
+
+  .planner-multi-resize-handle.is-sw {
+    left: -13px;
+    bottom: -13px;
+  }
+
+  .planner-multi-resize-handle.is-se {
+    right: -13px;
+    bottom: -13px;
+  }
+
+  .planner-image-comment-shell {
+    gap: 6px;
+    max-width: 190%;
+  }
+
+  .planner-image-comment {
+    min-height: 40px;
+    padding: 9px 12px;
+    border-radius: 14px;
+  }
+
+  .planner-comment-size-control {
+    gap: 2px;
+    padding: 3px;
+  }
+
+  .planner-comment-size-control button {
+    width: 38px;
+    height: 38px;
+    font-size: 0.76rem;
+  }
+
+  .planner-capture-frame-btn {
+    right: 12px;
+    bottom: 12px;
+    min-height: 46px;
+    padding: 10px 15px;
+  }
+}

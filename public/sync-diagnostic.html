@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mori 合成同步诊断</title>
+  <style>
+    body { margin: 0; padding: 24px; color: #202020; background: #fbfaf6; font: 15px/1.6 system-ui, sans-serif; }
+    main { max-width: 680px; margin: auto; }
+    button { margin-right: 10px; padding: 9px 16px; cursor: pointer; }
+    pre { white-space: pre-wrap; overflow-wrap: anywhere; padding: 16px; border: 1px solid #bbb; border-radius: 8px; }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>Mori 合成同步诊断</h1>
+    <p>仅测试随机 Project 和合成 Board；不会读取或修改真实 Planner。点击开始才会连接测试 Worker。</p>
+    <button id="runDiagnostic" type="button">开始诊断</button>
+    <button id="closeDiagnostic" type="button">关闭</button>
+    <pre id="diagnosticResult">已关闭；没有同步任务在运行。</pre>
+  </main>
+  <script type="module" src="js/sync/tauriSyncTestRuntime.js"></script>
+</body>
+</html>

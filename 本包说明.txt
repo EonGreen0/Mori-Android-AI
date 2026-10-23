@@ -1,0 +1,8 @@
+Mori 朋友体验版源码，2026-10-23。Windows 4.9.3 / Android 4.9.3。Android AI 版本开发者：EonGreen0。
+基于当前未提交工作区打包，不代表上游仓库最新发布。
+Android 4.9.3 调整 AI 参数面板关闭手势：内容区域下滑只滚动，必须拖动顶部小白条才能关闭。
+依赖安装：npm ci。Windows：npm run tauri:build -- --bundles nsis。Android调试：npm run build:android。
+Android正式签名需自己的签名配置；原签名私钥不随包提供。
+参考 docs/EXTERNAL_DEPENDENCIES.md：scrapers.bin/libmorisec 使用现存预编译文件，私有源码不可获得。
+cloudflare/wrangler.example.toml 为配置模板；本包不包含个人账号密钥、本机 wrangler.toml、素材数据、登录状态或构建缓存。
+云端配置及服务地址限制见 docs/FRIEND_GUIDE.md。

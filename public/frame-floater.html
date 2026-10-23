@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Mori 收藏帧</title>
+  <link rel="stylesheet" href="frame-floater.css" />
+</head>
+<body>
+  <main class="floater" aria-label="Mori 帧工具">
+    <button class="drag" type="button" title="点击打开收藏夹，按住拖动" aria-label="打开收藏夹，按住拖动" aria-expanded="false" aria-controls="favoritesPanel">
+      <span aria-hidden="true">⋮</span>
+    </button>
+    <span class="panel-title">收藏夹 <small id="favoriteCount">0</small></span>
+    <button id="capture" class="capture" type="button" aria-label="收藏当前画面" title="收藏当前画面（Ctrl+Shift+F）">
+      <span class="icon" aria-hidden="true">▣</span>
+    </button>
+    <button id="closePanel" class="close-panel" type="button" aria-label="收起收藏夹" title="收起">×</button>
+  </main>
+  <section id="favoritesPanel" class="favorites-panel" hidden aria-label="图片收藏夹">
+    <div class="panel-tools">
+      <button id="pasteImage" type="button">＋ 粘贴图片</button>
+      <span class="paste-hint">Ctrl + V</span>
+      <button id="refreshFavorites" class="refresh" type="button" aria-label="刷新收藏" title="刷新">↻</button>
+    </div>
+    <div id="favoriteGallery" class="favorite-gallery" aria-live="polite"></div>
+    <footer class="panel-footer">
+      <div class="selection-tools">
+        <span id="selectionCount">选择图片</span>
+        <button id="clearSelection" type="button">取消选择</button>
+        <button id="removeFavorites" type="button" title="移出收藏，保留原图">移除收藏</button>
+      </div>
+      <label class="target-label" for="favoriteTarget">加入相册或策划</label>
+      <div class="insert-tools"><select id="favoriteTarget" aria-label="目标相册或策划"></select><button id="insertFavorites" type="button">加入</button></div>
+      <div class="status-row"><p id="favoritesStatus" role="status">截图和粘贴图片都会保存在这里</p><button id="undoRemove" type="button" hidden>撤销移除</button></div>
+    </footer>
+  </section>
+  <script type="module" src="frame-floater.js"></script>
+</body>
+</html>

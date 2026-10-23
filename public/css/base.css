@@ -1,0 +1,271 @@
+/* Base Layout, Reset & Navigation */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+input,
+textarea,
+[contenteditable="true"],
+.selectable {
+  -webkit-user-select: text;
+  user-select: text;
+}
+
+html,
+body {
+  overflow-x: hidden;
+  width: 100%;
+  position: relative;
+  overscroll-behavior-x: none;
+  -webkit-touch-callout: none;
+  -webkit-user-select: none;
+  user-select: none;
+}
+
+body {
+  font-family: "Inter", sans-serif;
+  background-color: var(--bg-color);
+  color: var(--text-main);
+  display: flex;
+  justify-content: center;
+  min-height: 100vh;
+}
+
+.app-container {
+  width: 100%;
+  max-width: 500px;
+  padding: calc(40px + env(safe-area-inset-top)) 20px
+    calc(110px + env(safe-area-inset-bottom)) 20px;
+  display: flex;
+  flex-direction: column;
+  overflow-x: hidden;
+}
+
+header {
+  margin-bottom: 40px;
+  text-align: center;
+}
+
+.dynamic-greeting {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  margin: 40px 0 8px 0;
+  transition: var(--transition);
+}
+
+.dynamic-greeting #greetingText {
+  font-size: 0.85rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 2.5px;
+  color: var(--text-main);
+  opacity: 0.9;
+}
+
+.dynamic-greeting #greetingStats {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  opacity: 0.8;
+  margin-top: 4px;
+}
+
+header h1 {
+  font-size: 2rem;
+  font-weight: 600;
+  color: var(--primary);
+  margin-bottom: 8px;
+  text-transform: uppercase;
+  letter-spacing: 2px;
+}
+
+header p {
+  color: var(--text-secondary);
+  font-size: 1rem;
+}
+
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  margin: 0 auto;
+  width: 100%;
+  max-width: 500px;
+  background-color: var(--bg-color);
+  border-top: 1px solid var(--primary);
+  display: flex;
+  justify-content: space-around;
+  padding: 12px 0 calc(12px + env(safe-area-inset-bottom, 0px)) 0;
+  z-index: 100;
+}
+
+.is-desktop .bottom-nav {
+  padding: 12px 0;
+}
+
+.nav-item {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  text-decoration: none;
+  color: var(--text-secondary);
+  transition: var(--transition);
+  flex: 1;
+}
+
+.nav-item svg {
+  width: 24px;
+  height: 24px;
+  transition: var(--transition);
+}
+
+.nav-item span {
+  font-size: 0.6rem;
+  font-weight: 700;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+}
+
+.nav-item.active {
+  color: var(--text-main);
+}
+
+.nav-item.active svg {
+  color: var(--text-main);
+  transform: translateY(-2px);
+}
+
+.bg-animation-canvas {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: -1;
+  display: block;
+}
+
+/* Desktop shell: use the window as a workspace instead of a phone-sized column. */
+html.is-desktop body {
+  display: block;
+}
+
+html.is-desktop .app-container {
+  max-width: none;
+  min-height: 100vh;
+  padding: 32px 36px 36px 112px;
+  overflow: visible;
+}
+
+html.is-desktop .app-container > header {
+  position: fixed;
+  top: 18px;
+  left: 15px;
+  width: 72px;
+  margin: 0;
+  z-index: 105;
+  text-align: center;
+}
+
+html.is-desktop .app-container > header h1 {
+  margin: 0;
+  font-size: 0.98rem;
+  letter-spacing: 2px;
+}
+
+html.is-desktop main {
+  width: 100%;
+}
+
+html.is-desktop #homePage,
+html.is-desktop #historyPage,
+html.is-desktop #settingsPage {
+  width: min(100%, 780px);
+  margin: 0 auto;
+}
+
+html.is-desktop .bottom-nav {
+  top: 58px;
+  bottom: 18px;
+  left: 14px;
+  right: auto;
+  width: 74px;
+  max-width: none;
+  height: auto;
+  margin: 0;
+  padding: 8px 6px;
+  flex-direction: column;
+  justify-content: flex-start;
+  gap: 7px;
+  border: 1px solid var(--primary);
+  border-radius: var(--radius-xl);
+}
+
+html.is-desktop .nav-item {
+  flex: 0 0 auto;
+  width: 100%;
+  min-height: 58px;
+  padding: 8px 3px;
+  border-radius: var(--radius-l);
+}
+
+html.is-desktop .nav-item:hover {
+  background: color-mix(in srgb, var(--primary) 8%, transparent);
+}
+
+html.is-desktop .nav-item.active {
+  background: var(--primary);
+  color: var(--on-primary);
+}
+
+html.is-desktop .nav-item.active svg {
+  color: var(--on-primary);
+}
+
+html.is-desktop .nav-item span {
+  max-width: 62px;
+  font-size: 0.54rem;
+  line-height: 1.2;
+  letter-spacing: 0.5px;
+  text-align: center;
+}
+
+@media (max-width: 480px) {
+  html.is-android .app-container {
+    padding: calc(28px + env(safe-area-inset-top)) 14px
+      calc(92px + env(safe-area-inset-bottom)) 14px;
+  }
+
+  html.is-android .app-container > header {
+    margin-bottom: 28px;
+  }
+
+  html.is-android .bottom-nav {
+    padding: 9px 4px calc(9px + env(safe-area-inset-bottom, 0px));
+  }
+
+  html.is-android .nav-item {
+    gap: 4px;
+  }
+
+  html.is-android .nav-item svg {
+    width: 22px;
+    height: 22px;
+  }
+
+  html.is-android .nav-item span {
+    font-size: 0.56rem;
+    letter-spacing: 0.6px;
+  }
+}

@@ -1,0 +1,161 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>RUNNING</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+import { createCloudflareTransport } from "../public/js/sync/cloudflareTransport.js";
+import { stagePlannerBoardForSync, snapshotPlannerBoardForSync } from "../public/js/sync/plannerJournal.js";
+import { pushPlannerOutboxOnce, pullAndMergePlannerRemoteState } from "../public/js/sync/syncEngine.js";
+import { getPlannerRemoteSyncState } from "../public/js/sync/remoteMergeStore.js";
+import { listPlannerOutbox } from "../public/js/sync/outbox.js";
+
+const result = document.getElementById("result");
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const report = { projectId: `mori-runtime-${crypto.randomUUID()}`, steps: [] };
+
+try {
+  const projectId = report.projectId;
+  const deviceId = "windows-test-isolated";
+  const transport = createCloudflareTransport({
+    id: "cloudflare-runtime-test",
+    baseUrl: "https://mori-sync-test.mori-sync-worker.workers.dev",
+    getAccessToken: () => window.__moriTestAccessToken(),
+  });
+  let board = {
+    projectId,
+    projectTitle: "Synthetic Planner Test",
+    nodes: [{ id: "node_a", type: "text", text: "synthetic", x: 0, y: 0, comment: "old" }],
+    edges: [],
+    view: { zoom: 1, panX: 0, panY: 0 },
+  };
+  const localShared = async () => (await snapshotPlannerBoardForSync(board)).shared;
+  const applyMergedShared = async (merged) => {
+    board = {
+      ...board,
+      projectId: merged.project.id,
+      projectTitle: merged.project.title,
+      nodes: merged.nodes,
+      edges: merged.edges,
+    };
+  };
+  const remoteNode = async (payload, suffix) => {
+    const response = await transport.pushMutations({
+      projectId,
+      deviceId: "independent-remote-test",
+      mutations: [{
+        opId: `${projectId}-${suffix}`,
+        projectId,
+        entityType: "node",
+        entityId: "node_a",
+        operation: "upsert",
+        payload,
+        baseRevision: 0,
+        deviceId: "independent-remote-test",
+      }],
+    });
+    assert(response.rejected.length === 0 && response.acknowledgedOpIds.length === 1, `remote ${suffix} failed`);
+    return response.receipts[0].revision;
+  };
+  const serverChanges = async () => (await transport.pullChanges({ projectId, cursor: "0", limit: 100 })).changes;
+
+  const staged = await stagePlannerBoardForSync(board, { deviceId });
+  assert(staged.mutations.length === 2, "initial Board must stage project + node");
+  assert((await listPlannerOutbox({ projectId })).length === 2, "initial Outbox missing mutations");
+  const firstPush = await pushPlannerOutboxOnce({ transport, projectId, deviceId });
+  assert(firstPush.status === "ok" && firstPush.acknowledgedCount === 2, "initial push did not ACK both mutations");
+  assert((await listPlannerOutbox({ projectId })).length === 0, "ACK did not drain Outbox");
+  assert((await serverChanges()).map((c) => c.revision).join(",") === "1,2", "remote initial revision/change_log mismatch");
+  report.steps.push("Board → Journal/Outbox → Worker ACK: 2 revisions; Outbox drained");
+
+  const initialPull = await pullAndMergePlannerRemoteState({
+    transport, projectId, localShared: await localShared(), deviceId, applyMergedShared, pageLimit: 1,
+  });
+  assert(initialPull.status === "ok" && initialPull.cursor === "2", "initial shadow/cursor mismatch");
+  report.steps.push("Initial remote shadow and paged cursor established at 2");
+
+  await remoteNode({ ...board.nodes[0], comment: "server-1" }, "remote-1");
+  let failedApply = false;
+  try {
+    await pullAndMergePlannerRemoteState({
+      transport, projectId, localShared: await localShared(), deviceId,
+      applyMergedShared: async () => { throw new Error("synthetic local persistence failure"); },
+    });
+  } catch (error) {
+    failedApply = String(error?.message).includes("synthetic local persistence failure");
+  }
+  assert(failedApply, "local persistence failure was not observed");
+  assert((await getPlannerRemoteSyncState({ transportId: transport.id, projectId })).cursor === "2", "failed apply advanced cursor");
+  const remotePull = await pullAndMergePlannerRemoteState({
+    transport, projectId, localShared: await localShared(), deviceId, applyMergedShared,
+  });
+  assert(remotePull.cursor === "3" && board.nodes[0].comment === "server-1", "remote change was not applied");
+  report.steps.push("Independent remote change applied; cursor advanced only after local apply");
+
+  board.nodes[0] = { ...board.nodes[0], x: 50 };
+  assert((await stagePlannerBoardForSync(board, { deviceId })).mutations.length === 1, "local x edit not staged");
+  const localPush = await pushPlannerOutboxOnce({ transport, projectId, deviceId });
+  assert(localPush.status === "ok" && localPush.cursor === "4", "local x edit not pushed");
+  await remoteNode({ ...board.nodes[0], x: 0, comment: "server-2" }, "remote-2");
+  const merged = await pullAndMergePlannerRemoteState({
+    transport, projectId, localShared: await localShared(), deviceId, applyMergedShared,
+  });
+  assert(merged.cursor === "5" && merged.reconciliationCount === 1, "different-field merge did not reconcile");
+  assert(board.nodes[0].x === 50 && board.nodes[0].comment === "server-2", "different-field merge lost content");
+  assert((await listPlannerOutbox({ projectId })).length === 1, "reconciliation mutation absent");
+  const reconciliationPush = await pushPlannerOutboxOnce({ transport, projectId, deviceId });
+  assert(reconciliationPush.status === "ok" && reconciliationPush.cursor === "6", "reconciliation push failed");
+  const echo = await pullAndMergePlannerRemoteState({
+    transport, projectId, localShared: await localShared(), deviceId, applyMergedShared,
+  });
+  assert(echo.cursor === "6" && echo.reconciliationCount === 0, "reconciliation echo did not converge");
+  const afterEcho = await serverChanges();
+  assert(afterEcho.length === 6 && afterEcho.at(-1).payload.x === 50 && afterEcho.at(-1).payload.comment === "server-2", "remote reconciliation state mismatch");
+  report.steps.push("Different-field concurrent merge → reconciliation → server convergence at revision 6");
+
+  board.nodes[0] = { ...board.nodes[0], y: 42 };
+  await stagePlannerBoardForSync(board, { deviceId });
+  const beforeOffline = await listPlannerOutbox({ projectId });
+  assert(beforeOffline.length === 1, "offline mutation not staged");
+  const offlineTransport = {
+    ...transport,
+    pushMutations: async () => { throw new Error("synthetic network failure"); },
+  };
+  const offline = await pushPlannerOutboxOnce({ transport: offlineTransport, projectId, deviceId });
+  const afterOffline = await listPlannerOutbox({ projectId });
+  assert(offline.status === "error" && afterOffline.length === 1, "offline mutation was lost");
+  assert(afterOffline[0].opId === beforeOffline[0].opId && afterOffline[0].attempts === 1, "offline sealed opId changed");
+  const recovery = await pushPlannerOutboxOnce({ transport, projectId, deviceId });
+  assert(recovery.status === "ok" && recovery.cursor === "7", "offline recovery failed");
+  assert((await listPlannerOutbox({ projectId })).length === 0, "offline retry Outbox not cleared");
+  report.steps.push("Network failure retained sealed opId; same opId recovered once at revision 7");
+
+  board.nodes[0] = { ...board.nodes[0], x: 55 };
+  await stagePlannerBoardForSync(board, { deviceId });
+  const beforeLostAck = await listPlannerOutbox({ projectId });
+  assert(beforeLostAck.length === 1, "lost-ACK mutation not staged");
+  const lostAckTransport = {
+    ...transport,
+    pushMutations: async (request) => {
+      const applied = await transport.pushMutations(request);
+      assert(applied.rejected.length === 0 && applied.acknowledgedOpIds.length === 1, "server did not apply before simulated ACK loss");
+      throw new Error("synthetic ACK loss after server apply");
+    },
+  };
+  const lostAck = await pushPlannerOutboxOnce({ transport: lostAckTransport, projectId, deviceId });
+  assert(lostAck.status === "error", "lost ACK did not leave retryable operation");
+  assert((await listPlannerOutbox({ projectId }))[0]?.opId === beforeLostAck[0].opId, "lost ACK changed sealed opId");
+  const beforeAckRetry = await serverChanges();
+  assert(beforeAckRetry.length === 8, "server did not apply lost-ACK mutation exactly once");
+  const ackRetry = await pushPlannerOutboxOnce({ transport, projectId, deviceId });
+  const afterAckRetry = await serverChanges();
+  assert(ackRetry.status === "ok" && ackRetry.cursor === "8", "lost-ACK retry did not ACK");
+  assert(afterAckRetry.length === 8 && (await listPlannerOutbox({ projectId })).length === 0, "lost-ACK retry duplicated revision or retained Outbox");
+  report.steps.push("ACK lost after real server apply; same opId retry ACK without revision 9");
+
+  document.title = "PASS";
+  result.textContent = `PASS\n${JSON.stringify(report, null, 2)}`;
+} catch (error) {
+  document.title = "FAIL";
+  result.textContent = `FAIL\n${JSON.stringify(report, null, 2)}\n${error?.stack || error}`;
+}
+</script>

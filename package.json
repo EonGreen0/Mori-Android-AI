@@ -1,0 +1,55 @@
+{
+  "name": "mori",
+  "version": "4.9.3",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "node scripts/test-sync.mjs && node scripts/test-browser.mjs && node scripts/verify-album-sync.mjs && node scripts/verify-gallery-import.mjs && node scripts/verify-link-album-assignment.mjs && node scripts/verify-ai-organizer.mjs && node scripts/verify-android-local-planner.mjs && node scripts/verify-rednote-scraper.mjs",
+    "test:albums": "node scripts/verify-album-sync.mjs",
+    "start": "node scripts/dev-server.mjs",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build",
+    "build:android": "node scripts/build-android.mjs debug",
+    "build:android:release": "node scripts/build-android.mjs release",
+    "build:ios:ipa": "export LANG=en_US.UTF-8 LC_ALL=en_US.UTF-8 && npx cap sync ios && xcodebuild -workspace ios/App/App.xcworkspace -scheme App -configuration Release -sdk iphoneos -archivePath build/Mori.xcarchive archive CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY=\"\" && mkdir -p Payload && cp -r build/Mori.xcarchive/Products/Applications/App.app Payload/ && zip -r \"Mori v4.3.2.ipa\" Payload && rm -rf Payload build",
+    "build:macos": "npm run tauri:build && rm -rf /tmp/dmg_build && mkdir -p /tmp/dmg_build && cp -r src-tauri/target/release/bundle/macos/Mori.app /tmp/dmg_build/ && cp src-tauri/README.txt /tmp/dmg_build/ && ln -s /Applications /tmp/dmg_build/Applications && hdiutil create -volname \"Mori\" -srcfolder /tmp/dmg_build -ov -format UDZO \"Mori-v4.3.2-macOS-arm64.dmg\" && rm -rf /tmp/dmg_build && tar -czf \"Mori-v4.3.2-macOS-arm64.app.tar.gz\" -C src-tauri/target/release/bundle/macos Mori.app",
+    "test:sync": "node scripts/test-sync.mjs",
+    "test:browser": "node scripts/test-browser.mjs",
+    "test:cloudflare:live": "node scripts/verify-planner-cloudflare-runtime.mjs"
+  },
+  "keywords": [],
+  "author": "EonGreen0",
+  "license": "GPL-3.0-or-later",
+  "dependencies": {
+    "@capacitor-community/media": "^8.0.1",
+    "@capacitor/android": "^7.6.8",
+    "@capacitor/app": "^7.1.2",
+    "@capacitor/cli": "^7.6.8",
+    "@capacitor/clipboard": "^7.0.4",
+    "@capacitor/core": "^7.6.8",
+    "@capacitor/filesystem": "^7.1.8",
+    "@capacitor/haptics": "^7.0.0",
+    "@capacitor/ios": "^7.6.8",
+    "@capacitor/network": "^7.0.4",
+    "@capacitor/share": "^7.0.4",
+    "@capgo/capacitor-native-biometric": "^7.6.0",
+    "axios": "^1.16.0",
+    "cheerio": "^1.2.0",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "fflate": "^0.8.3",
+    "form-data": "^4.0.6"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.11.4",
+    "esbuild": "^0.28.2",
+    "javascript-obfuscator": "^5.6.0",
+    "playwright-core": "1.63.0"
+  },
+  "overrides": {
+    "tar": "7.5.21",
+    "brace-expansion": "5.0.9",
+    "undici": "7.29.0"
+  }
+}

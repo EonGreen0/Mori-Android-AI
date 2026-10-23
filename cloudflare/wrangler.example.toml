@@ -1,0 +1,21 @@
+name = "mori-sync"
+main = "src/index.js"
+compatibility_date = "2026-09-01"
+
+# Copy this file to wrangler.toml only after creating the real resources.
+# Keep account credentials and MORI_SYNC_TOKEN out of Git.
+
+[[d1_databases]]
+binding = "DB"
+database_name = "mori-sync"
+database_id = "REPLACE_WITH_D1_DATABASE_ID"
+migrations_dir = "migrations"
+
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "mori-sync-assets"
+
+[vars]
+# Local-only escape hatch. Do not enable this in production.
+ALLOW_INSECURE_LOCAL = "0"
+MORI_MAX_DISPLAY_BYTES = "12582912"

@@ -1,0 +1,5 @@
+{
+  "name": "mori-sync-worker",
+  "private": true,
+  "type": "module"
+}

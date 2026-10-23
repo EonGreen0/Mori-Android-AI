@@ -1,0 +1,5 @@
+# Copy to .dev.vars for local Wrangler development only.
+# Never commit the real .dev.vars file.
+MORI_SYNC_TOKEN=replace-with-a-long-random-personal-token
+ALLOW_INSECURE_LOCAL=0
+MORI_MAX_DISPLAY_BYTES=12582912

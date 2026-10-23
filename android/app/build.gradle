@@ -1,0 +1,103 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace = "com.mori.downloader"
+    compileSdk = rootProject.ext.compileSdkVersion
+    ndkVersion = "28.2.13676358"
+    defaultConfig {
+        applicationId "com.mori.downloader"
+        minSdkVersion rootProject.ext.minSdkVersion
+        targetSdkVersion rootProject.ext.targetSdkVersion
+        versionCode 44
+        versionName "4.9.3"
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        ndk {
+            abiFilters 'arm64-v8a', 'armeabi-v7a', 'x86_64'
+        }
+        aaptOptions {
+             // Files and dirs to omit from the packaged assets dir, modified to accommodate modern web apps.
+             // Default: https://android.googlesource.com/platform/frameworks/base/+/282e181b58cf72b6ca770dc7ca5f91f135444502/tools/aapt/AaptAssets.cpp#61
+            ignoreAssetsPattern = '!.svn:!.git:!.ds_store:!*.scc:.*:!CVS:!thumbs.db:!picasa.ini:!*~'
+        }
+    }
+    buildFeatures {
+        buildConfig true
+    }
+    packagingOptions {
+        pickFirst 'lib/**/libmorisec.so'
+    }
+    if (file('src/main/cpp/CMakeLists.txt').exists()) {
+        externalNativeBuild {
+            cmake {
+                path file('src/main/cpp/CMakeLists.txt')
+                version '3.22.1'
+            }
+        }
+    }
+    def signingPropertiesFile = new File(System.getProperty('user.home'), '.mori/android-signing.properties')
+    def signingProperties = new Properties()
+    if (signingPropertiesFile.exists()) {
+        signingPropertiesFile.withInputStream { signingProperties.load(it) }
+    }
+    def releaseSigningConfigured = signingPropertiesFile.exists()
+        && ['storeFile', 'storePassword', 'keyAlias', 'keyPassword'].every { signingProperties[it] }
+
+    signingConfigs {
+        release {
+            if (releaseSigningConfigured) {
+                storeFile file(signingProperties['storeFile'])
+                storePassword signingProperties['storePassword']
+                keyAlias signingProperties['keyAlias']
+                keyPassword signingProperties['keyPassword']
+            }
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android.txt'), 'proguard-rules.pro'
+            if (releaseSigningConfigured) {
+                signingConfig signingConfigs.release
+            }
+        }
+    }
+
+    if (gradle.startParameter.taskNames.any { it.toLowerCase().contains('release') } && !releaseSigningConfigured) {
+        throw new GradleException("Mori release signing config not found or incomplete: ${signingPropertiesFile}")
+    }
+    applicationVariants.all { variant ->
+        variant.outputs.all {
+            outputFileName = "Mori v${variant.versionName}.apk"
+        }
+    }
+}
+
+repositories {
+    flatDir{
+        dirs '../capacitor-cordova-android-plugins/src/main/libs', 'libs'
+    }
+}
+
+dependencies {
+    implementation fileTree(include: ['*.jar'], dir: 'libs')
+    implementation "androidx.appcompat:appcompat:$androidxAppCompatVersion"
+    implementation "androidx.coordinatorlayout:coordinatorlayout:$androidxCoordinatorLayoutVersion"
+    implementation "androidx.core:core-splashscreen:$coreSplashScreenVersion"
+    implementation project(':capacitor-android')
+    testImplementation "junit:junit:$junitVersion"
+    androidTestImplementation "androidx.test.ext:junit:$androidxJunitVersion"
+    androidTestImplementation "androidx.test.espresso:espresso-core:$androidxEspressoCoreVersion"
+    implementation project(':capacitor-cordova-android-plugins')
+    implementation "com.squareup.okhttp3:okhttp:4.12.0"
+}
+
+apply from: 'capacitor.build.gradle'
+
+try {
+    def servicesJSON = file('google-services.json')
+    if (servicesJSON.text) {
+        apply plugin: 'com.google.gms.google-services'
+    }
+} catch(Exception e) {
+    logger.info("google-services.json not found, google-services plugin not applied. Push Notifications won't work")
+}

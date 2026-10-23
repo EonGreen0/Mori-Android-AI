@@ -1,0 +1,145 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>RUNNING</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import {
+    enqueuePlannerMutations,
+    listPlannerOutbox,
+    preparePlannerOutboxBatch,
+    sealPreparedPlannerOutboxBatch,
+    removePlannerOutboxOperations,
+    markPlannerOutboxAttempt,
+    setPlannerSyncMeta,
+    getPlannerSyncMeta,
+  } from "../public/js/sync/outbox.js";
+  import {
+    createPlannerMutation,
+    PLANNER_MUTATION_OPERATIONS,
+  } from "../public/js/sync/mutations.js";
+
+  const result = document.getElementById("result");
+  const assert = (condition, message) => {
+    if (!condition) throw new Error(message);
+  };
+  const log = [];
+
+  try {
+    const projectId = `runtime_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const deviceId = "runtime_browser";
+    const move = (index) => ({
+      ...createPlannerMutation({
+        projectId,
+        entityType: "node",
+        entityId: "node_move",
+        operation: PLANNER_MUTATION_OPERATIONS.UPSERT,
+        payload: { id: "node_move", type: "image", x: index, y: 20 },
+        baseRevision: 4,
+        baseExists: true,
+        deviceId,
+        timestamp: 100 + index,
+        opId: `runtime_move_${index}_${projectId}`,
+      }),
+      queuedAt: 100 + index,
+    });
+
+    await enqueuePlannerMutations([move(1), move(2), move(3)]);
+    await setPlannerSyncMeta(`runtime_meta:${projectId}`, { ok: true });
+    const meta = await getPlannerSyncMeta(`runtime_meta:${projectId}`);
+    assert(meta?.ok === true, "IndexedDB meta round-trip failed");
+    log.push("meta round-trip ok");
+
+    const raw = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(raw.length === 3, `expected 3 raw operations, got ${raw.length}`);
+    log.push("raw outbox persistence ok");
+
+    const batch = await preparePlannerOutboxBatch({ projectId, rawLimit: 20, mutationLimit: 20 });
+    assert(batch.returnedCount === 1, `expected 1 compacted mutation, got ${batch.returnedCount}`);
+    assert(batch.entries[0].mutation.payload.x === 3, "compacted payload did not keep latest move");
+    assert(batch.entries[0].sourceOpIds.length === 3, "source operation mapping was lost");
+    log.push("outbox compaction ok");
+
+    const sealed = await sealPreparedPlannerOutboxBatch(batch);
+    assert(sealed.entries.length === 1, "sealed batch should contain one mutation");
+    const sealedOpId = sealed.entries[0].mutation.opId;
+    const sealedRaw = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(sealedRaw.length === 1, `sealing should replace 3 raw ops with 1 durable op, got ${sealedRaw.length}`);
+    assert(Number(sealedRaw[0].sealedAt) > 0, "sealed operation missing sealedAt");
+    assert(sealedRaw[0].compactedSourceOpIds.length === 3, "sealed operation lost compacted source lineage");
+    log.push("durable batch sealing ok");
+
+    await markPlannerOutboxAttempt(sealedOpId, "simulated network failure");
+    const retryBatch = await preparePlannerOutboxBatch({ projectId, rawLimit: 20, mutationLimit: 20 });
+    assert(retryBatch.returnedCount === 1, "retry should contain exactly one sealed mutation");
+    assert(retryBatch.entries[0].mutation.opId === sealedOpId, "retry changed the sealed opId");
+    assert(retryBatch.entries[0].sourceOpIds.length === 1, "retry should treat sealed mutation as a hard barrier");
+    log.push("stable retry opId ok");
+
+    await removePlannerOutboxOperations([sealedOpId]);
+    const emptyAfterAck = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(emptyAfterAck.length === 0, "ack cleanup did not remove sealed operation");
+    log.push("ack cleanup ok");
+
+    const transientId = "node_transient";
+    const create = {
+      ...createPlannerMutation({
+        projectId,
+        entityType: "node",
+        entityId: transientId,
+        operation: PLANNER_MUTATION_OPERATIONS.UPSERT,
+        payload: { id: transientId, type: "text", text: "temporary" },
+        baseRevision: 0,
+        baseExists: false,
+        deviceId,
+        timestamp: 201,
+        opId: `runtime_create_${projectId}`,
+      }),
+      queuedAt: 201,
+    };
+    const update = {
+      ...createPlannerMutation({
+        projectId,
+        entityType: "node",
+        entityId: transientId,
+        operation: PLANNER_MUTATION_OPERATIONS.UPSERT,
+        payload: { id: transientId, type: "text", text: "temporary 2" },
+        baseRevision: 0,
+        baseExists: true,
+        deviceId,
+        timestamp: 202,
+        opId: `runtime_update_${projectId}`,
+      }),
+      queuedAt: 202,
+    };
+    const deletion = {
+      ...createPlannerMutation({
+        projectId,
+        entityType: "node",
+        entityId: transientId,
+        operation: PLANNER_MUTATION_OPERATIONS.DELETE,
+        baseRevision: 0,
+        baseExists: true,
+        deviceId,
+        timestamp: 203,
+        opId: `runtime_delete_${projectId}`,
+      }),
+      queuedAt: 203,
+    };
+
+    await enqueuePlannerMutations([create, update, deletion]);
+    const noOpBatch = await preparePlannerOutboxBatch({ projectId, rawLimit: 20, mutationLimit: 20 });
+    assert(noOpBatch.returnedCount === 0, "create/update/delete chain should compact to no network mutation");
+    assert(noOpBatch.discardOpIds.length === 3, "discard ids were not preserved for local cleanup");
+    const noOpSeal = await sealPreparedPlannerOutboxBatch(noOpBatch);
+    assert(noOpSeal.discardedCount === 3, "sealing did not atomically discard safe local no-op chain");
+    const finalRaw = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(finalRaw.length === 0, "discard cleanup did not empty transient operations");
+    log.push("safe local no-op elimination ok");
+
+    document.title = "PASS";
+    result.textContent = `PASS\n${log.join("\n")}`;
+  } catch (error) {
+    document.title = "FAIL";
+    result.textContent = `FAIL\n${error?.stack || error}`;
+  }
+</script>

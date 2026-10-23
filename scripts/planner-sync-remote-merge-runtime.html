@@ -1,0 +1,424 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>RUNNING</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+import { createSyncTransport, SYNC_TRANSPORT_CAPABILITIES } from "../public/js/sync/transport.js";
+import { pullAndMergePlannerRemoteState, pullPlannerRemoteStateReadOnly, pushPlannerOutboxOnce } from "../public/js/sync/syncEngine.js";
+import { getPlannerAssetsByIds } from "../public/js/sync/assetStore.js";
+import { openPlannerSyncDb, PLANNER_SYNC_STORES } from "../public/js/sync/database.js";
+import { getPlannerRemoteSyncState } from "../public/js/sync/remoteMergeStore.js";
+import {
+  enqueuePlannerMutations,
+  listPlannerOutbox,
+  removePlannerOutboxOperations,
+} from "../public/js/sync/outbox.js";
+import {
+  createPlannerMutation,
+  PLANNER_MUTATION_OPERATIONS,
+} from "../public/js/sync/mutations.js";
+
+const result = document.getElementById("result");
+const log = [];
+const assert = (condition, message) => {
+  if (!condition) throw new Error(message);
+};
+
+try {
+  const projectId = `remote_merge_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  let revision = 0;
+  const changes = [];
+  const appendChange = ({ entityType, entityId, operation, payload = null, deviceId = "remote" }) => {
+    revision += 1;
+    changes.push({
+      projectId,
+      revision,
+      entityType,
+      entityId,
+      operation,
+      payload,
+      deviceId,
+      serverTimestamp: Date.now(),
+      deletedAt: operation === "delete" ? Date.now() : null,
+    });
+    return revision;
+  };
+
+  const project = { id: projectId, title: "Remote Merge Plan", payload: { commentFontSize: 17 } };
+  const baseNode = { id: "node_a", type: "image", x: 0, y: 0, comment: "old" };
+  appendChange({ entityType: "project", entityId: projectId, operation: "upsert", payload: project });
+  appendChange({ entityType: "node", entityId: "node_a", operation: "upsert", payload: baseNode });
+
+  let pullCalls = 0;
+  let injectLocalMutationDuringPull = false;
+  let injectedLocalOpId = "";
+  const transport = createSyncTransport({
+    id: "fake-remote-merge",
+    capabilities: [
+      SYNC_TRANSPORT_CAPABILITIES.MUTATIONS,
+      SYNC_TRANSPORT_CAPABILITIES.CHANGES,
+    ],
+    async pullChanges({ cursor, limit }) {
+      pullCalls += 1;
+      if (injectLocalMutationDuringPull) {
+        injectLocalMutationDuringPull = false;
+        injectedLocalOpId = `race_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+        await enqueuePlannerMutations([
+          createPlannerMutation({
+            projectId,
+            entityType: "node",
+            entityId: "race_marker",
+            operation: PLANNER_MUTATION_OPERATIONS.UPSERT,
+            payload: { id: "race_marker", type: "text", text: "local edit during pull" },
+            baseExists: false,
+            deviceId: "windows",
+            opId: injectedLocalOpId,
+          }),
+        ]);
+      }
+      const offset = Math.max(0, Number(cursor) || 0);
+      const page = changes.slice(offset, offset + Math.max(1, Number(limit) || 200));
+      const next = offset + page.length;
+      return {
+        changes: page,
+        cursor: next,
+        hasMore: next < changes.length,
+      };
+    },
+    async pushMutations({ mutations }) {
+      for (const mutation of mutations) {
+        appendChange({
+          entityType: mutation.entityType,
+          entityId: mutation.entityId,
+          operation: mutation.operation,
+          payload: mutation.payload,
+          deviceId: mutation.deviceId || "local",
+        });
+      }
+      return { acknowledgedOpIds: mutations.map((mutation) => mutation.opId), cursor: changes.length };
+    },
+  });
+
+  const baseLocal = {
+    schemaVersion: 1,
+    project,
+    nodes: [baseNode],
+    edges: [],
+    assets: [],
+  };
+  let persisted = baseLocal;
+
+  const first = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: baseLocal,
+    deviceId: "windows",
+    pageLimit: 1,
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(first.status === "ok", "initial pull failed");
+  assert(first.reconciliationCount === 0, "initial equal state should not reconcile");
+  assert(first.cursor === 2, "initial cursor mismatch");
+  log.push("initial remote shadow established");
+
+  const localMoved = {
+    ...persisted,
+    nodes: [{ ...persisted.nodes[0], x: 50 }],
+  };
+  appendChange({
+    entityType: "node",
+    entityId: "node_a",
+    operation: "upsert",
+    payload: { ...baseNode, comment: "remote note" },
+    deviceId: "android",
+  });
+
+  injectLocalMutationDuringPull = true;
+  const raced = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: localMoved,
+    deviceId: "windows",
+    applyMergedShared: async () => { throw new Error("must not apply a stale snapshot after local edits"); },
+  });
+  assert(
+    raced.status === "blocked" && raced.reason === "local-edits-during-pull",
+    "local edit during pull did not abort stale merge",
+  );
+  const afterRace = await getPlannerRemoteSyncState({ transportId: transport.id, projectId });
+  assert(afterRace.cursor === 2, "race-aborted pull advanced durable cursor");
+  assert(injectedLocalOpId, "race test did not inject local mutation");
+  await removePlannerOutboxOperations([injectedLocalOpId]);
+  log.push("local edits arriving during pull abort stale merge");
+
+  let failedApply = false;
+  try {
+    await pullAndMergePlannerRemoteState({
+      transport,
+      projectId,
+      localShared: localMoved,
+      deviceId: "windows",
+      applyMergedShared: async () => { throw new Error("simulated local persistence failure"); },
+    });
+  } catch (error) {
+    failedApply = /simulated local persistence failure/.test(String(error?.message));
+  }
+  assert(failedApply, "local persistence failure did not abort merge");
+  const afterFailedApply = await getPlannerRemoteSyncState({ transportId: transport.id, projectId });
+  assert(afterFailedApply.cursor === 2, "cursor advanced before local persistence succeeded");
+  assert((await listPlannerOutbox({ projectId, limit: 20 })).length === 0, "failed merge wrote reconciliation ops");
+  log.push("cursor stays put when local persistence fails");
+
+  const mergedDifferentFields = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: localMoved,
+    deviceId: "windows",
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(persisted.nodes[0].x === 50, "local geometry was lost");
+  assert(persisted.nodes[0].comment === "remote note", "remote comment was not merged");
+  assert(mergedDifferentFields.conflictCount === 0, "different fields should merge without conflict");
+  assert(mergedDifferentFields.reconciliationCount === 1, "merged state should reconcile back to remote");
+  const reconcileOutbox = await listPlannerOutbox({ projectId, limit: 20 });
+  assert(reconcileOutbox.length === 1, "expected one reconciliation mutation");
+  assert(reconcileOutbox[0].baseRevision === 3, "reconciliation base revision should be latest remote revision");
+  assert(reconcileOutbox[0].payload.x === 50 && reconcileOutbox[0].payload.comment === "remote note", "reconciliation payload mismatch");
+  log.push("different-field merge creates reconciliation mutation");
+
+  const pullCallsBeforeBlocked = pullCalls;
+  const blocked = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: persisted,
+    deviceId: "windows",
+    applyMergedShared: async () => { throw new Error("should not run while outbox pending"); },
+  });
+  assert(blocked.status === "blocked" && blocked.reason === "pending-outbox", "pending outbox did not block pull");
+  assert(pullCalls === pullCallsBeforeBlocked, "blocked pull still contacted transport");
+  log.push("pending outbox blocks remote merge");
+
+  const pushed = await pushPlannerOutboxOnce({ transport, projectId, deviceId: "windows" });
+  assert(pushed.status === "ok", "reconciliation push failed");
+  assert((await listPlannerOutbox({ projectId, limit: 20 })).length === 0, "reconciliation outbox not cleared");
+
+  const afterOwnEcho = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: persisted,
+    deviceId: "windows",
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(afterOwnEcho.reconciliationCount === 0, "own reconciled echo should converge without another mutation");
+  assert(afterOwnEcho.cursor === 4, "own echo cursor mismatch");
+  log.push("reconciliation echo converges");
+
+  appendChange({
+    entityType: "node",
+    entityId: "node_a",
+    operation: "upsert",
+    payload: { ...persisted.nodes[0], comment: "remote wins same field" },
+    deviceId: "android",
+  });
+  const localSameField = {
+    ...persisted,
+    nodes: [{ ...persisted.nodes[0], comment: "local same field" }],
+  };
+  const sameField = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: localSameField,
+    deviceId: "windows",
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(persisted.nodes[0].comment === "remote wins same field", "same-field conflict did not resolve remote");
+  assert(sameField.conflicts.some((item) => item.kind === "field-conflict" && item.path === "comment"), "same-field conflict not recorded");
+  assert(sameField.reconciliationCount === 0, "remote-wins same field should not reconcile stale local value");
+  const storedConflictState = await getPlannerRemoteSyncState({ transportId: transport.id, projectId });
+  assert(storedConflictState.conflicts.some((item) => item.kind === "field-conflict"), "conflict log was not persisted");
+  log.push("same-field conflict resolves deterministically and is logged");
+
+  appendChange({
+    entityType: "node",
+    entityId: "node_a",
+    operation: "delete",
+    deviceId: "android",
+  });
+  const deleted = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: persisted,
+    deviceId: "windows",
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(persisted.nodes.length === 0, "remote tombstone did not delete local node");
+  assert(deleted.reconciliationCount === 0, "remote tombstone should not be reversed");
+  log.push("remote tombstone deletes local entity");
+
+  const staleResurrection = {
+    ...persisted,
+    nodes: [{ ...baseNode, x: 999, comment: "stale" }],
+  };
+  const tombstoneReplay = await pullAndMergePlannerRemoteState({
+    transport,
+    projectId,
+    localShared: staleResurrection,
+    deviceId: "windows",
+    applyMergedShared: async (merged) => { persisted = merged; },
+  });
+  assert(persisted.nodes.length === 0, "persisted tombstone allowed stale resurrection");
+  assert(tombstoneReplay.reconciliationCount === 0, "stale resurrection produced an upsert");
+  const conflictHistory = await getPlannerRemoteSyncState({ transportId: transport.id, projectId });
+  assert(
+    conflictHistory.conflicts.some((item) => item.kind === "field-conflict" && item.path === "comment"),
+    "older conflict history disappeared after later pulls",
+  );
+  log.push("persisted tombstone blocks stale resurrection and conflict history survives");
+
+
+  // Pull-first rebase preserves local and remote fields despite a queued stale full payload.
+  {
+    const rebaseProjectId = projectId + "_rebase";
+    const rebaseProject = { ...project, id: rebaseProjectId };
+    let serverRevision = 2;
+    const serverChanges = [
+      { projectId: rebaseProjectId, revision: 1, entityType: "project", entityId: rebaseProjectId, operation: "upsert", payload: rebaseProject },
+      { projectId: rebaseProjectId, revision: 2, entityType: "node", entityId: baseNode.id, operation: "upsert", payload: baseNode },
+    ];
+    let injectRevisionConflict = false;
+    let failNetworkAfterApply = false;
+    const rebaseTransport = createSyncTransport({
+      id: "rebase-test", capabilities: [SYNC_TRANSPORT_CAPABILITIES.MUTATIONS, SYNC_TRANSPORT_CAPABILITIES.CHANGES],
+      async pullChanges({ cursor }) {
+        return { changes: serverChanges.filter(c => c.revision > (Number(cursor) || 0)), cursor: serverRevision, hasMore: false };
+      },
+      async pushMutations({ mutations }) {
+        if (injectRevisionConflict) {
+          injectRevisionConflict = false;
+          serverChanges.push({ ...serverChanges.at(-1), revision: ++serverRevision,
+            payload: { ...serverChanges.at(-1).payload, comment: "new concurrent comment" } });
+        }
+        const acknowledgedOpIds = [], rejected = [];
+        for (const mutation of mutations) {
+          const current = serverChanges.findLast(c => c.entityType === mutation.entityType && c.entityId === mutation.entityId);
+          if ((current?.revision || 0) !== mutation.baseRevision) {
+            rejected.push({ opId: mutation.opId, code: "revision_conflict", retryable: true });
+          } else {
+            serverChanges.push({ ...mutation, revision: ++serverRevision });
+            acknowledgedOpIds.push(mutation.opId);
+          }
+        }
+        if (failNetworkAfterApply) { failNetworkAfterApply = false; throw new Error("acknowledgement lost"); }
+        return { acknowledgedOpIds, rejected, cursor: serverRevision };
+      },
+    });
+    let visible = { ...baseLocal, project: rebaseProject };
+    const rebase = () => pullAndMergePlannerRemoteState({
+      transport: rebaseTransport, projectId: rebaseProjectId, localShared: visible,
+      rebasePendingOutbox: true, applyMergedShared: async shared => { visible = shared; },
+    });
+    await rebase();
+    visible = { ...visible, nodes: [{ ...baseNode, x: 50 }] };
+    serverChanges.push({ ...serverChanges.at(-1), revision: ++serverRevision,
+      payload: { ...baseNode, comment: "phone comment" } });
+    const staleOp = createPlannerMutation({ projectId: rebaseProjectId, entityType: "node",
+      entityId: baseNode.id, operation: "upsert", payload: visible.nodes[0], baseRevision: 2 });
+    await enqueuePlannerMutations([staleOp]);
+    await rebase();
+    let queued = await listPlannerOutbox({ projectId: rebaseProjectId });
+    assert(queued.length === 1 && queued[0].opId !== staleOp.opId, "stale operation not replaced atomically");
+    assert(queued[0].baseRevision === 3 && queued[0].payload.x === 50 && queued[0].payload.comment === "phone comment", "rebase lost independent fields");
+    injectRevisionConflict = true;
+    const conflictedPush = await pushPlannerOutboxOnce({ transport: rebaseTransport, projectId: rebaseProjectId });
+    assert(conflictedPush.rejected[0].code === "revision_conflict", "write race was not rejected");
+    await rebase();
+    queued = await listPlannerOutbox({ projectId: rebaseProjectId });
+    assert(queued[0].baseRevision === 4 && queued[0].payload.x === 50 && queued[0].payload.comment === "new concurrent comment", "conflict retry lost data");
+    failNetworkAfterApply = true;
+    const uncertain = await pushPlannerOutboxOnce({ transport: rebaseTransport, projectId: rebaseProjectId });
+    assert(uncertain.status === "error", "uncertain acknowledgement not represented");
+    const settled = await rebase();
+    assert(settled.reconciliationCount === 0, "applied write with lost ACK duplicated local operations");
+    assert((await listPlannerOutbox({ projectId: rebaseProjectId })).length === 0, "echo did not resolve uncertain queue");
+    assert(visible.nodes[0].x === 50 && visible.nodes[0].comment === "new concurrent comment", "settled board lost fields");
+    log.push("pull-first rebase, transactional version conflicts and lost acknowledgements preserve independent edits");
+  }
+
+  // Applying the board snapshots IndexedDB before the merge transaction has
+  // stored newly pulled assets. That empty snapshot must not discard metadata.
+  {
+    const imageProjectId = projectId + "_assets";
+    const ids = Array.from({ length: 49 }, (_, index) => "sha256:" + (index + 100).toString(16).padStart(64, "0"));
+    const assets = ids.slice(0, 4).map(id => ({
+      id, type: "image", source: { hash: id, bytes: 10, mime: "image/png", ext: "png" },
+      display: { hash: "sha256:" + "f".repeat(64), bytes: 5, mime: "image/webp", ext: "webp" },
+    }));
+    const nodes = ids.map((assetId, index) => ({ id: "image_" + index, type: "image", assetId, x: index, y: 0, w: 100 }));
+    const imageShared = { schemaVersion: 1, project: { id: imageProjectId, title: "Images", payload: {} }, nodes, edges: [], assets };
+    const imageChanges = [
+      { entityType: "project", entityId: imageProjectId, payload: imageShared.project, revision: 1 },
+      ...nodes.map((payload, index) => ({ entityType: "node", entityId: payload.id, payload, revision: index + 2 })),
+      ...assets.map((payload, index) => ({ entityType: "asset", entityId: payload.id, payload, revision: index + 84 })),
+    ].map(change => ({ ...change, projectId: imageProjectId, operation: "upsert", deviceId: "fixture", serverTimestamp: change.revision }));
+    const imageCursors = [];
+    let imagePullFail = false;
+    const imageTransport = createSyncTransport({
+      id: transport.id + "_assets", capabilities: [SYNC_TRANSPORT_CAPABILITIES.CHANGES],
+      async pullChanges({ cursor }) {
+        imageCursors.push(cursor);
+        if (imagePullFail) throw new Error("offline reset");
+        return { changes: imageChanges.filter(change => change.revision > Number(cursor || 0)), cursor: "87", hasMore: false };
+      },
+    });
+    const applySnapshot = async shared => ({ ...shared, assets: await getPlannerAssetsByIds(ids) });
+    const fresh = await pullPlannerRemoteStateReadOnly({ transport: imageTransport, projectId: imageProjectId, applyRemoteShared: applySnapshot });
+    assert(fresh.merged.assets.length === 4, "fresh Android board snapshot dropped newly pulled image metadata");
+    assert((await getPlannerAssetsByIds(ids)).length === 4, "read-only merge did not durably store image metadata");
+    // Reproduce an already-advanced cursor with missing device asset rows.
+    const db = await openPlannerSyncDb();
+    const clearAssets = db.transaction(PLANNER_SYNC_STORES.ASSETS, "readwrite");
+    const clearDone = new Promise((resolve, reject) => { clearAssets.oncomplete = resolve; clearAssets.onerror = () => reject(clearAssets.error); });
+    assets.forEach(asset => clearAssets.objectStore(PLANNER_SYNC_STORES.ASSETS).delete(asset.id));
+    await clearDone;
+    const retry = await pullPlannerRemoteStateReadOnly({ transport: imageTransport, projectId: imageProjectId, applyRemoteShared: applySnapshot });
+    assert(retry.receivedCount === 0 && retry.cursor === "87", "fixture must retry with an unchanged r87 cursor");
+    assert(retry.merged.assets.length === 4 && (await getPlannerAssetsByIds(ids)).length === 4, "delta-zero Android retry did not restore shadow metadata");
+    assert(retry.merged.nodes.length === 49 && (await listPlannerOutbox({ projectId: imageProjectId })).length === 0, "read-only repair changed nodes or created uploads");
+    log.push("Android r87/zero-delta retry restores 4 available assets for 49 image nodes without uploads");
+
+    const rebuilt = await pullPlannerRemoteStateReadOnly({ transport: imageTransport, projectId: imageProjectId, fromStart: true, applyRemoteShared: applySnapshot });
+    assert(imageCursors.at(-1) == null && rebuilt.receivedCount === imageChanges.length, "manual redownload did not replay the full remote catalog");
+    assert(rebuilt.merged.nodes.length === 49 && rebuilt.merged.assets.length === 4, "full replay lost image nodes/catalog");
+    const beforeFailedReset = await getPlannerRemoteSyncState({ transportId: imageTransport.id, projectId: imageProjectId });
+    imagePullFail = true;
+    let appliedFailedReset = false;
+    let resetError;
+    try { await pullPlannerRemoteStateReadOnly({ transport: imageTransport, projectId: imageProjectId, fromStart: true, applyRemoteShared() { appliedFailedReset = true; } }); }
+    catch (error) { resetError = error; }
+    assert(resetError && !appliedFailedReset, "failed reset must preserve the visible board");
+    const afterFailedReset = await getPlannerRemoteSyncState({ transportId: imageTransport.id, projectId: imageProjectId });
+    assert(JSON.stringify(afterFailedReset) === JSON.stringify(beforeFailedReset), "failed full replay erased durable state");
+    assert((await listPlannerOutbox({ projectId: imageProjectId })).length === 0, "full replay generated uploads");
+    imagePullFail = false;
+    log.push("manual full replay preserves nodes, asset metadata and durable state on network failure without uploading");
+
+    const pcTransport = createSyncTransport({
+      id: transport.id + "_pc_assets", capabilities: [SYNC_TRANSPORT_CAPABILITIES.CHANGES],
+      async pullChanges() { return { changes: imageChanges, cursor: "87", hasMore: false }; },
+    });
+    const pc = await pullAndMergePlannerRemoteState({
+      transport: pcTransport, projectId: imageProjectId, localShared: { ...imageShared, assets: [] },
+      applyMergedShared: async shared => ({ ...shared, assets: [] }),
+    });
+    assert(pc.merged.assets.length === 4, "Windows apply callback discarded merged assets");
+    assert(pc.reconciliationCount === 0, "Windows created asset deletes from its stale pre-commit snapshot");
+    log.push("Windows apply snapshots preserve merged assets and do not reconcile false deletes");
+  }
+
+  document.title = "PASS";
+  result.textContent = `PASS\n${log.join("\n")}`;
+} catch (error) {
+  document.title = "FAIL";
+  result.textContent = `FAIL\n${error?.stack || error}`;
+}
+</script>

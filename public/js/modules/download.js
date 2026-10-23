@@ -1,0 +1,969 @@
+// download.js — main download flow (analyze + batch download)
+import { translations, t } from "../i18n/index.js";
+import { convertImagesToPdf } from "../utils/pdfHelper.js";
+import {
+  Filesystem,
+  showToast,
+  cleanUrl,
+  extractCleanUrl,
+  handleScrapeError,
+  checkWifiOnlyGuard,
+  getNetworkStatus,
+  autoClearInputBox,
+  stopAllMedia,
+} from "../utils/index.js";
+import { startNativeDownload, renderResult, escapeHtml } from "../ui.js";
+import { cancelCurrentDownload } from "../ui/nativeDownload.js";
+import { showConfirm, hideConfirm } from "./modals.js";
+import { saveToHistory, safeSetHistory } from "./history.js";
+import { extractBatchUrls, analyzeUrlSilent } from "./batchManager.js";
+import {
+  setTikTokSource,
+  scrapeTikTok,
+  setInstagramSource,
+  scrapeInstagram,
+  setYouTubeSource,
+  scrapeYouTube,
+  setTwitterSource,
+  scrapeTwitter,
+  setSpotifySource,
+  scrapeSpotify,
+  scrapePinterest,
+  scrapeAppleMusic,
+  scrapeFacebook,
+  scrapeRedNote,
+  scrapeDouyin,
+  scrapeBilibili,
+  scrapeThreads,
+  scrapeBandcamp,
+  scrapePixiv,
+} from "../scrapers/index.js";
+import {
+  decodeHtmlEntities,
+  isBatchMode,
+  batchUrlInput,
+  batchModalOverlay,
+  batchProgressList,
+  batchModalCounter,
+  batchDownloadAllBtn,
+  resultSection,
+  loader,
+  downloadBtn,
+  urlInput,
+  currentLang,
+  currentSlideIndex,
+  slideData,
+  setCurrentSlideIndex,
+  setSlideData,
+  confirmTitle,
+  confirmMessage,
+  confirmOverlay,
+  okConfirmBtn,
+  cancelConfirmBtn,
+  updateGreeting,
+} from "./core.js";
+
+let loaderTimeout = null;
+
+function clearLoaderTimeout() {
+  if (loaderTimeout) {
+    clearTimeout(loaderTimeout);
+    loaderTimeout = null;
+  }
+}
+
+function showLoader() {
+  clearLoaderTimeout();
+  if (loader) loader.classList.remove("hidden");
+}
+
+function hideLoader(delay = 0) {
+  clearLoaderTimeout();
+  if (delay > 0) {
+    loaderTimeout = setTimeout(() => {
+      if (loader) loader.classList.add("hidden");
+      loaderTimeout = null;
+    }, delay);
+  } else {
+    if (loader) loader.classList.add("hidden");
+  }
+}
+
+async function enforceNetworkGuards() {
+  if (!(await checkWifiOnlyGuard())) return false;
+
+  const isCellularWarning =
+    localStorage.getItem("mori_cellular_warning") === "true";
+  if (isCellularWarning) {
+    const netStatus = await getNetworkStatus();
+    if (netStatus.connectionType === "cellular") {
+      const confirmed = await new Promise((resolve) => {
+        showConfirm(
+          t("title-cellular-warning"),
+          translations[currentLang]["msg-cellular-warning"] ||
+            "You are connected to Cellular Data. Proceed with media download?",
+          () => resolve(true),
+          () => resolve(false),
+        );
+      });
+      if (!confirmed) return false;
+    }
+  }
+  return true;
+}
+
+downloadBtn.addEventListener("click", async () => {
+  if (downloadBtn.classList.contains("is-cancelling")) return;
+
+  if (isBatchMode) {
+    const rawBatchText = batchUrlInput ? batchUrlInput.value : "";
+    const batchUrls = extractBatchUrls(rawBatchText);
+
+    if (batchUrls.length === 0) {
+      showToast(
+        translations[currentLang]["toast-no-batch-urls"] ||
+          "No valid URLs found in text",
+      );
+      return;
+    }
+
+    if (!(await enforceNetworkGuards())) return;
+
+    const preferServer = localStorage.getItem("mori_prefer_server") || "auto";
+
+    if (batchModalOverlay && batchProgressList) {
+      batchProgressList.innerHTML = "";
+      if (batchModalCounter) {
+        batchModalCounter.textContent = `0 / ${batchUrls.length}`;
+      }
+      if (batchDownloadAllBtn) batchDownloadAllBtn.classList.add("hidden");
+      batchModalOverlay.classList.remove("hidden");
+
+      const batchResults = [];
+      let completedCount = 0;
+
+      // Render initial pending queue list
+      batchUrls.forEach((bUrl, idx) => {
+        const itemEl = document.createElement("div");
+        itemEl.className = "batch-item";
+        itemEl.id = `batchItem_${idx}`;
+        itemEl.innerHTML = `
+          <div class="batch-item-info">
+            <div class="batch-item-title">Link ${idx + 1}</div>
+            <div class="batch-item-url">${escapeHtml(bUrl)}</div>
+            <div class="batch-item-progress" aria-hidden="true">
+              <div class="batch-item-progress-fill"></div>
+            </div>
+          </div>
+          <div class="batch-item-status pending">PENDING</div>
+        `;
+        batchProgressList.appendChild(itemEl);
+      });
+
+      let batchCancelled = false;
+      for (let i = 0; i < batchUrls.length; i++) {
+        if (batchModalOverlay.classList.contains("hidden")) {
+          batchCancelled = true;
+          break;
+        }
+        const bUrl = batchUrls[i];
+        const statusEl = document.querySelector(
+          `#batchItem_${i} .batch-item-status`,
+        );
+        const titleEl = document.querySelector(
+          `#batchItem_${i} .batch-item-title`,
+        );
+
+        if (statusEl) {
+          statusEl.className = "batch-item-status analyzing";
+          statusEl.textContent = t("status-analyzing");
+        }
+
+        const cachedAnalysis = window._moriBatchAnalysisCache?.get?.(bUrl);
+        const data =
+          cachedAnalysis &&
+          Date.now() - cachedAnalysis.timestamp < (cachedAnalysis.ttl || 5 * 60 * 1000)
+            ? cachedAnalysis.data
+            : await analyzeUrlSilent(bUrl, preferServer);
+        completedCount++;
+        if (batchModalCounter) {
+          batchModalCounter.textContent = `${completedCount} / ${batchUrls.length}`;
+        }
+
+        if (data && data.status) {
+          const decodedTitle = decodeHtmlEntities(
+            data.result?.title || "Media File",
+          );
+          batchResults.push({ url: bUrl, data });
+          if (titleEl) {
+            titleEl.textContent = decodedTitle;
+          }
+          if (statusEl) {
+            statusEl.className = "batch-item-status success";
+            statusEl.textContent = t("status-ready");
+          }
+
+          if (localStorage.getItem("mori_incognito") !== "true") {
+            const history = JSON.parse(
+              localStorage.getItem("mori_history") || "[]",
+            );
+            const newHistoryItem = {
+              id: Date.now() + i + Math.floor(Math.random() * 1000),
+              url: bUrl,
+              sourceUrl: data.result.sourceUrl || bUrl,
+              title: decodedTitle,
+              author: data.result.author || "Creator",
+              thumbnail: (typeof data.result.thumbnail === "string" && data.result.thumbnail.startsWith("data:") && data.result.thumbnail.length > 25000) ? "" : (data.result.thumbnail || ""),
+              downloads: data.result.downloads || [],
+              date: new Date().toLocaleDateString("en-US", {
+                month: "short",
+                day: "numeric",
+                year: "numeric",
+              }),
+              timestamp: Date.now() + i,
+            };
+
+            history.unshift(newHistoryItem);
+            safeSetHistory(history);
+            if (typeof updateGreeting === "function") updateGreeting();
+          }
+        } else {
+          if (statusEl) {
+            if (data && data.isPlaylist) {
+              statusEl.className = "batch-item-status skipped";
+              statusEl.textContent = t("status-skipped-playlist");
+            } else {
+              statusEl.className = "batch-item-status error";
+              statusEl.textContent = t("status-failed");
+            }
+          }
+        }
+      }
+
+      if (!batchCancelled && batchResults.length > 0 && batchDownloadAllBtn) {
+        const dlAllText =
+          translations[currentLang]["batch-download-all"] || "DOWNLOAD ALL";
+        batchDownloadAllBtn.textContent = `${dlAllText} (${batchResults.length})`;
+        batchDownloadAllBtn.classList.remove("hidden");
+
+        batchDownloadAllBtn.onclick = async () => {
+          if (batchModalOverlay.classList.contains("hidden")) return;
+          batchDownloadAllBtn.disabled = true;
+
+          const progressState = new Map();
+          const setItemProgress = (idx, percent) => {
+            const itemEl = document.getElementById(`batchItem_${idx}`);
+            const track = itemEl?.querySelector(".batch-item-progress");
+            const fill = itemEl?.querySelector(".batch-item-progress-fill");
+            const safePercent = Math.max(0, Math.min(100, Math.round(percent || 0)));
+            if (track) {
+              track.classList.toggle("is-active", safePercent > 0 && safePercent < 100);
+              track.classList.toggle("is-complete", safePercent >= 100);
+              track.setAttribute("aria-label", `${safePercent}%`);
+            }
+            if (fill) fill.style.width = `${safePercent}%`;
+          };
+          const onBatchProgress = (event) => {
+            const state = progressState.get(event.detail?.url || "");
+            if (!state) return;
+            const unitProgress = Math.max(0, Math.min(100, Number(event.detail?.percent) || 0));
+            const overall =
+              ((state.currentUnit + unitProgress / 100) /
+                Math.max(1, state.totalUnits)) *
+              100;
+            setItemProgress(state.idx, overall);
+          };
+          window.addEventListener("mori_download_progress", onBatchProgress);
+          const batchPhotoMode =
+            localStorage.getItem("mori_batch_photo_mode") || "all";
+          const concurrentLimit = parseInt(
+            localStorage.getItem("mori_concurrent") || "1",
+            10,
+          );
+
+          // ── Setup batch cancel ──────────────────────────────────
+          let batchDownloadCancelled = false;
+          const batchCloseBtn = document.getElementById("batchCloseBtn");
+          // Swap Close → Cancel Download button
+          let cancelDlBtn = document.getElementById("batchCancelDownloadBtn");
+          if (!cancelDlBtn) {
+            cancelDlBtn = document.createElement("button");
+            cancelDlBtn.id = "batchCancelDownloadBtn";
+            cancelDlBtn.textContent =
+              translations[currentLang]["btn-cancel-download"] ||
+              "CANCEL DOWNLOAD";
+          }
+          if (batchCloseBtn) {
+            batchCloseBtn.style.display = "none";
+            batchCloseBtn.parentNode.insertBefore(cancelDlBtn, batchCloseBtn);
+          }
+          cancelDlBtn.onclick = () => {
+            batchDownloadCancelled = true;
+            cancelCurrentDownload();
+          };
+
+          // Helper to download a single batch item
+          async function downloadBatchItem(item, idx) {
+            // Skip if cancelled before we start this item
+            if (batchDownloadCancelled) {
+              const statusEl = document.querySelector(
+                `#batchItem_${idx} .batch-item-status`,
+              );
+              if (statusEl) {
+                statusEl.className = "batch-item-status cancelled";
+                statusEl.textContent = t("status-cancelled");
+              }
+              return;
+            }
+
+            const statusEl = document.querySelector(
+              `#batchItem_${idx} .batch-item-status`,
+            );
+            if (statusEl) {
+              statusEl.className = "batch-item-status downloading";
+              statusEl.textContent = t("status-downloading");
+            }
+
+            const downloadsList = item.data.result?.downloads || [];
+            const itemTitle = decodeHtmlEntities(
+              item.data.result?.title || "Media",
+            );
+            const progress = {
+              idx,
+              currentUnit: 0,
+              totalUnits: 1,
+            };
+            progressState.set(item.url, progress);
+            setItemProgress(idx, 1);
+
+            if (downloadsList.length > 0) {
+              const isVideoPost = downloadsList.some(
+                (d) =>
+                  /video/i.test(d.type) ||
+                  /\.mp4/i.test(d.url) ||
+                  d.type === "MP4" ||
+                  /\d+p/i.test(d.type),
+              );
+
+              if (isVideoPost) {
+                progress.totalUnits = 1;
+                const primaryVideo = downloadsList[0];
+                if (batchDownloadCancelled) {
+                  if (statusEl) {
+                    statusEl.className = "batch-item-status cancelled";
+                    statusEl.textContent = t("status-cancelled");
+                  }
+                  return;
+                }
+                await startNativeDownload(
+                  primaryVideo.url,
+                  primaryVideo.type,
+                  itemTitle,
+                  null,
+                  item.url,
+                  false, // don't reset cancel flag
+                  primaryVideo.fallbackUrls || [],
+                );
+              } else {
+                if (batchPhotoMode === "first") {
+                  progress.totalUnits = 1;
+                  if (batchDownloadCancelled) {
+                    if (statusEl) {
+                      statusEl.className = "batch-item-status cancelled";
+                      statusEl.textContent = t("status-cancelled");
+                    }
+                    return;
+                  }
+                  const dlObj = downloadsList[0];
+                  await startNativeDownload(
+                    dlObj.url,
+                    dlObj.type,
+                    itemTitle,
+                    null,
+                    item.url,
+                    false,
+                  );
+                } else if (batchPhotoMode === "pdf") {
+                  progress.totalUnits = 1;
+                  setItemProgress(idx, 12);
+                  const imageItems = downloadsList.filter(
+                    (d) =>
+                      /image|photo|jpg|png|webp/i.test(d.type) ||
+                      /\.(jpg|jpeg|png|webp)/i.test(d.url),
+                  );
+                  if (imageItems.length > 1) {
+                    try {
+                      const imageUrls = imageItems.map((img) => img.url);
+                      const pdfBuffer = await convertImagesToPdf(imageUrls);
+                      setItemProgress(idx, 78);
+
+                      // Check cancel AFTER async PDF generation
+                      if (batchDownloadCancelled) {
+                        if (statusEl) {
+                          statusEl.className = "batch-item-status cancelled";
+                          statusEl.textContent = t("status-cancelled");
+                        }
+                        return;
+                      }
+
+                      const sanitizedTitle =
+                        itemTitle
+                          .replace(/[\\/:*?"<>|#%&{}\[\]@$^+=~`';,]/g, "")
+                          .trim()
+                          .substring(0, 60) || "Mori_Batch_Album";
+                      const pdfFileName = `${sanitizedTitle}.pdf`;
+                      if (
+                        window.Capacitor?.isNativePlatform?.() &&
+                        Filesystem
+                      ) {
+                        const base64Pdf = btoa(
+                          pdfBuffer.reduce(
+                            (acc, byte) => acc + String.fromCharCode(byte),
+                            "",
+                          ),
+                        );
+                        await Filesystem.writeFile({
+                          path: `Download/Mori/${pdfFileName}`,
+                          directory: "EXTERNAL_STORAGE",
+                          data: base64Pdf,
+                          recursive: true,
+                        }).catch(() =>
+                          Filesystem.writeFile({
+                            path: `Download/Mori/${pdfFileName}`,
+                            directory: "DOCUMENTS",
+                            data: base64Pdf,
+                            recursive: true,
+                          }),
+                        );
+                      } else {
+                        const blob = new Blob([pdfBuffer], {
+                          type: "application/pdf",
+                        });
+                        const a = document.createElement("a");
+                        a.href = URL.createObjectURL(blob);
+                        a.download = pdfFileName;
+                        a.click();
+                        URL.revokeObjectURL(a.href);
+                      }
+                    } catch (pdfErr) {
+                      console.warn("PDF generation failed, fallback:", pdfErr);
+                      progress.totalUnits = Math.max(1, downloadsList.length);
+                      for (let dIdx = 0; dIdx < downloadsList.length; dIdx++) {
+                        progress.currentUnit = dIdx;
+                        if (batchDownloadCancelled) {
+                          if (statusEl) {
+                            statusEl.className = "batch-item-status cancelled";
+                            statusEl.textContent = t("status-cancelled");
+                          }
+                          return;
+                        }
+                        const dlObj = downloadsList[dIdx];
+                        const titleWithIdx =
+                          downloadsList.length > 1
+                            ? `${itemTitle}_${dIdx + 1}`
+                            : itemTitle;
+                        await startNativeDownload(
+                          dlObj.url,
+                          dlObj.type,
+                          titleWithIdx,
+                          null,
+                          item.url,
+                          false,
+                        );
+                      }
+                    }
+                  } else {
+                    if (batchDownloadCancelled) {
+                      if (statusEl) {
+                        statusEl.className = "batch-item-status cancelled";
+                        statusEl.textContent = t("status-cancelled");
+                      }
+                      return;
+                    }
+                    const dlObj = downloadsList[0];
+                    await startNativeDownload(
+                      dlObj.url,
+                      dlObj.type,
+                      itemTitle,
+                      null,
+                      item.url,
+                      false,
+                    );
+                  }
+                } else {
+                  // "all": download all carousel photos — check cancel between each photo
+                  progress.totalUnits = Math.max(1, downloadsList.length);
+                  for (let dIdx = 0; dIdx < downloadsList.length; dIdx++) {
+                    progress.currentUnit = dIdx;
+                    if (batchDownloadCancelled) {
+                      if (statusEl) {
+                        statusEl.className = "batch-item-status cancelled";
+                        statusEl.textContent = t("status-cancelled");
+                      }
+                      return;
+                    }
+                    const dlObj = downloadsList[dIdx];
+                    const titleWithIdx =
+                      downloadsList.length > 1
+                        ? `${itemTitle}_${dIdx + 1}`
+                        : itemTitle;
+                    await startNativeDownload(
+                      dlObj.url,
+                      dlObj.type,
+                      titleWithIdx,
+                      null,
+                      item.url,
+                      false,
+                    );
+                  }
+                }
+              }
+            }
+
+            if (batchDownloadCancelled) {
+              if (statusEl) {
+                statusEl.className = "batch-item-status cancelled";
+                statusEl.textContent = t("status-cancelled");
+              }
+            } else if (statusEl) {
+              setItemProgress(idx, 100);
+              statusEl.className = "batch-item-status completed";
+              statusEl.textContent = t("status-saved");
+            }
+          }
+
+          // Concurrent pool — run N downloads at a time
+          for (let i = 0; i < batchResults.length; i += concurrentLimit) {
+            if (batchDownloadCancelled) {
+              // Mark all remaining as cancelled
+              for (let j = i; j < batchResults.length; j++) {
+                const idx = batchUrls.indexOf(batchResults[j].url);
+                const statusEl = document.querySelector(
+                  `#batchItem_${idx} .batch-item-status`,
+                );
+                if (statusEl && !statusEl.classList.contains("completed")) {
+                  statusEl.className = "batch-item-status cancelled";
+                  statusEl.textContent = t("status-cancelled");
+                }
+              }
+              break;
+            }
+            const chunk = batchResults.slice(i, i + concurrentLimit);
+            await Promise.all(
+              chunk.map((item) => {
+                const idx = batchUrls.indexOf(item.url);
+                return downloadBatchItem(item, idx);
+              }),
+            );
+          }
+
+          window.removeEventListener("mori_download_progress", onBatchProgress);
+          progressState.clear();
+          if (cancelDlBtn && cancelDlBtn.parentNode) cancelDlBtn.remove();
+          if (batchCloseBtn) batchCloseBtn.style.display = "";
+          batchDownloadAllBtn.disabled = false;
+
+          if (batchDownloadCancelled) {
+            showToast(
+              t("toast-download-cancelled"),
+            );
+          } else {
+            showToast(t("batch-complete-toast"));
+            setTimeout(() => {
+              window.dispatchEvent(
+                new CustomEvent("mori_batch_completed", {
+                  detail: { urls: batchResults.map((item) => item.url) },
+                }),
+              );
+            }, 650);
+          }
+        };
+
+        // Batch mode is intentionally one-click: analyze the selected links,
+        // then begin downloading as soon as the queue is ready.
+        queueMicrotask(() => batchDownloadAllBtn.click());
+      }
+    }
+    return;
+  }
+
+  const rawInput = urlInput.value.trim();
+  const url = extractCleanUrl(rawInput);
+
+  if (!url) return;
+  if (url !== rawInput) {
+    urlInput.value = url;
+    urlInput.dispatchEvent(new Event("input"));
+  }
+
+  if (!(await enforceNetworkGuards())) return;
+
+  const phrases = translations[currentLang]["loader-phrases"];
+  const randomPhrase = phrases[Math.floor(Math.random() * phrases.length)];
+  const loaderText = loader.querySelector("p");
+  if (loaderText) loaderText.textContent = randomPhrase;
+
+  const supportedSection = document.querySelector(".supported-section");
+  resultSection.classList.add("hidden");
+  // Hide supportedSection when starting a download/preview
+  if (supportedSection) supportedSection.classList.add("hidden");
+
+  // Stop any previous media playing in background
+  stopAllMedia(document);
+
+  showLoader();
+  downloadBtn.disabled = false; // Keep enabled so it acts as Cancel
+  downloadBtn.classList.add("is-cancelling");
+  downloadBtn.textContent = translations[currentLang]["btn-cancel"] || "CANCEL";
+
+  // Flag to detect if user cancelled analyze
+  let analyzeCancelled = false;
+  const originalOnClick = downloadBtn._analyzeClickHandler;
+  const cancelAnalyzeHandler = () => {
+    analyzeCancelled = true;
+    cancelCurrentDownload();
+    downloadBtn.classList.remove("is-cancelling");
+    downloadBtn.disabled = false;
+    downloadBtn.textContent =
+      translations[currentLang]["btn-analyze"] || "Analyze";
+    hideLoader();
+    if (supportedSection) supportedSection.classList.remove("hidden");
+  };
+  downloadBtn.addEventListener("click", cancelAnalyzeHandler, { once: true });
+
+  try {
+    let data;
+    const preferServer = localStorage.getItem("mori_prefer_server") || "ask";
+    if (analyzeCancelled)
+      throw Object.assign(new Error("cancelled"), { _isCancelled: true });
+    if (url.includes("tiktok.com")) {
+      if (preferServer === "server1") setTikTokSource("tiktokio");
+      else if (preferServer === "server2") setTikTokSource("tikdownloader");
+      else setTikTokSource(null);
+      data = await scrapeTikTok(url);
+      if (data && data.requireSource) {
+        confirmTitle.textContent =
+          translations[currentLang]["label-choose-server"] || "Choose Server";
+        confirmMessage.textContent = t("server-desc-tiktok");
+        if (cancelConfirmBtn) {
+          cancelConfirmBtn.textContent = t("btn-server-2");
+          cancelConfirmBtn.style.color = "";
+        }
+        if (okConfirmBtn) {
+          okConfirmBtn.textContent = t("btn-server-1");
+          okConfirmBtn.style.color = "";
+          okConfirmBtn.classList.add("neutral-btn");
+        }
+        confirmOverlay.classList.remove("hidden");
+        confirmOverlay.style.display = "flex";
+        const chosen = await new Promise((resolve) => {
+          confirmOverlay._onDismissOutside = () => {
+            hideConfirm();
+            resolve("tiktokio");
+          };
+          okConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("tiktokio");
+          };
+          cancelConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("tikdownloader");
+          };
+        });
+        setTikTokSource(chosen);
+        data = await scrapeTikTok(url);
+      }
+    } else if (url.includes("instagram.com")) {
+      if (preferServer === "server1") setInstagramSource("indown");
+      else if (preferServer === "server2") setInstagramSource("savevid");
+      else setInstagramSource(null);
+      data = await scrapeInstagram(url);
+      if (data && data.requireSource) {
+        confirmTitle.textContent =
+          translations[currentLang]["label-choose-server"] || "Choose Server";
+        confirmMessage.textContent = t("server-desc-instagram");
+        if (cancelConfirmBtn) {
+          cancelConfirmBtn.textContent = t("btn-server-2");
+          cancelConfirmBtn.style.color = "";
+        }
+        if (okConfirmBtn) {
+          okConfirmBtn.textContent = t("btn-server-1");
+          okConfirmBtn.style.color = "";
+          okConfirmBtn.classList.add("neutral-btn");
+        }
+        confirmOverlay.classList.remove("hidden");
+        confirmOverlay.style.display = "flex";
+        const chosen = await new Promise((resolve) => {
+          confirmOverlay._onDismissOutside = () => {
+            hideConfirm();
+            resolve("indown");
+          };
+          okConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("indown");
+          };
+          cancelConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("savevid");
+          };
+        });
+        setInstagramSource(chosen);
+        data = await scrapeInstagram(url);
+      }
+    } else if (url.includes("youtube.com") || url.includes("youtu.be")) {
+      const playlistMatch = url.match(/[?&]list=([^"&?\/\s]+)/i);
+      const videoMatch = url.match(
+        /(?:youtube\.com\/(?:[^\/]+\/.+\/|(?:v|e(?:mbed)?|shorts|live)\/|.*[?&]v=)|youtu\.be\/)([^"&?\/\s]{11})/i,
+      );
+      const isPlaylist =
+        !!playlistMatch?.[1] && (!videoMatch?.[1] || url.includes("/playlist"));
+      if (isPlaylist) {
+        setYouTubeSource("gg");
+      } else {
+        if (preferServer === "server1") setYouTubeSource("gg");
+        else if (preferServer === "server2") setYouTubeSource("mobi");
+        else setYouTubeSource(null);
+      }
+      data = await scrapeYouTube(url);
+      if (data && data.requireSource) {
+        confirmTitle.textContent =
+          translations[currentLang]["label-choose-server"] || "Choose Server";
+        confirmMessage.textContent = t("server-desc-youtube");
+        if (cancelConfirmBtn) {
+          cancelConfirmBtn.textContent = t("btn-server-2");
+          cancelConfirmBtn.style.color = "";
+        }
+        if (okConfirmBtn) {
+          okConfirmBtn.textContent = t("btn-server-1");
+          okConfirmBtn.style.color = "";
+          okConfirmBtn.classList.add("neutral-btn");
+        }
+        confirmOverlay.classList.remove("hidden");
+        confirmOverlay.style.display = "flex";
+        const chosen = await new Promise((resolve) => {
+          confirmOverlay._onDismissOutside = () => {
+            hideConfirm();
+            resolve("gg");
+          };
+          okConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("gg");
+          };
+          cancelConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("mobi");
+          };
+        });
+        setYouTubeSource(chosen);
+        data = await scrapeYouTube(url);
+      }
+    } else if (
+      url.includes("twitter.com") ||
+      url.includes("x.com") ||
+      url.includes("fixupx.com") ||
+      url.includes("fxtwitter.com") ||
+      url.includes("vxtwitter.com")
+    ) {
+      if (preferServer === "server1") setTwitterSource("tvd");
+      else if (preferServer === "server2") setTwitterSource("savetwt");
+      else setTwitterSource(null);
+      data = await scrapeTwitter(url);
+      if (data && data.requireSource) {
+        confirmTitle.textContent =
+          translations[currentLang]["label-choose-server"] || "Choose Server";
+        confirmMessage.textContent = t("server-desc-twitter");
+        if (cancelConfirmBtn) {
+          cancelConfirmBtn.textContent = t("btn-server-2");
+          cancelConfirmBtn.style.color = "";
+        }
+        if (okConfirmBtn) {
+          okConfirmBtn.textContent = t("btn-server-1");
+          okConfirmBtn.style.color = "";
+          okConfirmBtn.classList.add("neutral-btn");
+        }
+        confirmOverlay.classList.remove("hidden");
+        confirmOverlay.style.display = "flex";
+        const chosen = await new Promise((resolve) => {
+          confirmOverlay._onDismissOutside = () => {
+            hideConfirm();
+            resolve("tvd");
+          };
+          okConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("tvd");
+          };
+          cancelConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("savetwt");
+          };
+        });
+        setTwitterSource(chosen);
+        data = await scrapeTwitter(url);
+      }
+    } else if (url.includes("spotify.com")) {
+      if (preferServer === "server1") setSpotifySource("spotidown");
+      else if (preferServer === "server2") setSpotifySource("soundloaders");
+      else setSpotifySource(null);
+      data = await scrapeSpotify(url);
+      if (data && data.requireSource) {
+        confirmTitle.textContent =
+          translations[currentLang]["label-choose-server"] || "Choose Server";
+        confirmMessage.textContent = t("server-desc-spotify");
+        if (cancelConfirmBtn) {
+          cancelConfirmBtn.textContent = t("btn-server-2");
+          cancelConfirmBtn.style.color = "";
+        }
+        if (okConfirmBtn) {
+          okConfirmBtn.textContent = t("btn-server-1");
+          okConfirmBtn.style.color = "";
+          okConfirmBtn.classList.add("neutral-btn");
+        }
+        confirmOverlay.classList.remove("hidden");
+        confirmOverlay.style.display = "flex";
+        const chosen = await new Promise((resolve) => {
+          confirmOverlay._onDismissOutside = () => {
+            hideConfirm();
+            resolve("spotidown");
+          };
+          okConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("spotidown");
+          };
+          cancelConfirmBtn.onclick = () => {
+            confirmOverlay._onDismissOutside = null;
+            hideConfirm();
+            resolve("soundloaders");
+          };
+        });
+        setSpotifySource(chosen);
+        data = await scrapeSpotify(url);
+      }
+    } else if (url.includes("pinterest.com") || url.includes("pin.it")) {
+      data = await scrapePinterest(url);
+    } else if (url.includes("music.apple.com")) {
+      data = await scrapeAppleMusic(url);
+    } else if (url.includes("facebook.com") || url.includes("fb.watch")) {
+      data = await scrapeFacebook(url);
+    } else if (
+      url.includes("xiaohongshu.com") ||
+      url.includes("rednote.com") ||
+      url.includes("xhslink.com") ||
+      url.includes("xhslink.cn")
+    ) {
+      data = await scrapeRedNote(url);
+    } else if (url.includes("douyin.com")) {
+      data = await scrapeDouyin(url);
+    } else if (
+      url.includes("bilibili.com") ||
+      url.includes("b23.tv") ||
+      url.includes("bili.im") ||
+      url.includes("bilibili.tv")
+    ) {
+      data = await scrapeBilibili(url);
+    } else if (url.includes("threads.net") || url.includes("threads.com")) {
+      data = await scrapeThreads(url);
+    } else if (url.includes("bandcamp.com")) {
+      data = await scrapeBandcamp(url);
+    } else if (url.includes("pixiv.net")) {
+      data = await scrapePixiv(url);
+    } else {
+      data = { status: false, message: "URL not supported yet." };
+    }
+
+    if (analyzeCancelled) {
+      downloadBtn.removeEventListener("click", cancelAnalyzeHandler);
+      return;
+    }
+
+    if (data && data.status) {
+      downloadBtn.removeEventListener("click", cancelAnalyzeHandler);
+      const history = JSON.parse(localStorage.getItem("mori_history") || "[]");
+      const existing = history.find(
+        (item) => cleanUrl(item.url) === cleanUrl(url),
+      );
+      if (existing && existing.localFiles && existing.localFiles.length > 0) {
+        for (const dl of data.result.downloads) {
+          const match = existing.localFiles.find((lf) => lf.type === dl.type);
+          if (match && Filesystem) {
+            try {
+              const uriObj = await Filesystem.getUri({
+                path: match.path,
+                directory: "EXTERNAL_STORAGE",
+              }).catch(() => null);
+              if (uriObj && uriObj.uri) {
+                dl.localUrl = window.Capacitor.convertFileSrc(uriObj.uri);
+              }
+            } catch (e) {
+              console.warn(
+                "Local file listed in history but not found on disk:",
+                match.path,
+              );
+            }
+          }
+        }
+      }
+
+      saveToHistory(data.result, url);
+      const state = renderResult(data.result, url);
+      if (state) {
+        setSlideData(state.slideData || []);
+        setCurrentSlideIndex(state.currentSlideIndex || 0);
+      }
+      hideLoader();
+
+      // Auto-Clear Input Box
+      autoClearInputBox();
+
+      // Auto Download Link if enabled
+      if (localStorage.getItem("mori_auto_download") === "true") {
+        setTimeout(() => {
+          const dlBtn = document.querySelector(
+            "#resultSection .dl-item, #resultSection .btn-download, #resultSection .dl-btn, #resultSection [data-url]",
+          );
+          if (dlBtn) dlBtn.click();
+        }, 500);
+      }
+    } else {
+      downloadBtn.removeEventListener("click", cancelAnalyzeHandler);
+      const diagnosticSuffix = String(data?.message || "").match(/\[[^\]]+\]\s*$/)?.[0] || "";
+      const errMsg = data?.loginRequired
+        ? `${t("douyin-login-required")}${diagnosticSuffix ? ` ${diagnosticSuffix}` : ""}`
+        : data?.message || "Unknown error occurred.";
+      handleScrapeError(data, data?.statusCode);
+      if (data?.loginRequired) showToast(t("douyin-login-required"));
+      if (loaderText)
+        loaderText.textContent =
+          translations[currentLang]["label-error"] + ": " + errMsg;
+      hideLoader(3000);
+      if (supportedSection) supportedSection.classList.remove("hidden");
+    }
+  } catch (err) {
+    downloadBtn.removeEventListener("click", cancelAnalyzeHandler);
+    if (err._isCancelled) {
+      // Silent cancel — already handled by cancelAnalyzeHandler
+    } else {
+      console.error("[CRITICAL] Download Flow Error:", err);
+      if (loaderText)
+        loaderText.textContent =
+          translations[currentLang]["label-fatal"] + ": " + err.message;
+      showToast(
+        translations[currentLang]["label-fatal-error"] + ": " + err.message,
+      );
+      hideLoader(5000);
+      if (supportedSection) supportedSection.classList.remove("hidden");
+    }
+  }
+
+  downloadBtn.classList.remove("is-cancelling");
+  downloadBtn.disabled = false;
+  downloadBtn.textContent = translations[currentLang]["btn-analyze"];
+});

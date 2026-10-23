@@ -1,0 +1,106 @@
+# Dependencies & Build
+node_modules/
+.tooling/
+work-*.png
+/work-qa/
+/outputs/
+dist/
+build/
+android/app/build
+android/.gradle
+bin/
+
+# Capacitor & Android Specs
+android/local.properties
+android/app/src/main/assets/public
+*.apk
+*.aab
+*.ipa
+*.dmg
+*.xcarchive
+*.keystore
+*.jks
+android-signing.properties
+sync-token.dpapi
+android/captures/
+
+# iOS & Capacitor
+ios/App/Pods/
+ios/App/build/
+ios/App/build-output/
+ios/App/.build/
+ios/App/App.xcworkspace/xcuserdata/
+ios/App/Podfile.lock
+
+# Logs
+*.log
+log.txt
+npm-debug.log*
+*.hprof
+
+# OS & IDEs
+.DS_Store
+.vscode/
+.idea/
+*.iml
+
+# Cloudflare local state / secrets
+.wrangler/
+cloudflare/.wrangler/
+cloudflare/.dev.vars
+cloudflare/wrangler.toml
+/NUL
+/nul
+
+# Tauri Desktop Build
+src-tauri/target/
+src-tauri/target-*/
+src-tauri/src-tauri/target-*/
+src-tauri/gen/
+
+# Private Core Scrapers Source & Build Tools
+src-scrapers/
+/scripts/*
+!/scripts/verify-planner-sync.mjs
+!/scripts/verify-planner-package-safety.mjs
+!/scripts/verify-android-preview-errors.mjs
+!/scripts/verify-android-planner-touch.mjs
+!/scripts/verify-android-sync-recovery.mjs
+!/scripts/verify-planner-zoom.mjs
+!/scripts/verify-album-sync.mjs
+!/scripts/verify-mobile-albums.mjs
+!/scripts/verify-album-package.mjs
+!/scripts/verify-android-local-images.mjs
+!/scripts/verify-image-compression.mjs
+!/scripts/verify-sync-entrypoints.mjs
+!/scripts/verify-frame-floater.mjs
+!/scripts/verify-favorites.mjs
+!/scripts/verify-favorites-panel.mjs
+!/scripts/verify-planner-preview-catalog.mjs
+!/scripts/verify-windows-preview-upload.mjs
+!/scripts/verify-planner-compaction.mjs
+!/scripts/verify-planner-remote-merge.mjs
+!/scripts/verify-cloudflare-http.mjs
+!/scripts/verify-cloudflare-db.mjs
+!/scripts/verify-cloudflare-assets.mjs
+!/scripts/verify-cloudflare-transport.mjs
+!/scripts/verify-planner-cloudflare-runtime.mjs
+!/scripts/planner-sync-idb-runtime.html
+!/scripts/planner-sync-asset-runtime.html
+!/scripts/planner-sync-transport-runtime.html
+!/scripts/planner-sync-remote-merge-runtime.html
+!/scripts/planner-sync-cloudflare-runtime.html
+!/scripts/build-android.mjs
+!/scripts/test-sync.mjs
+!/scripts/test-browser.mjs
+!/scripts/dev-server.mjs
+!/scripts/verify-gallery-import.mjs
+!/scripts/verify-link-album-assignment.mjs
+!/scripts/verify-ai-organizer.mjs
+!/scripts/verify-android-local-planner.mjs
+!/scripts/verify-rednote-scraper.mjs
+android/app/src/main/cpp/
+src-tauri/cpp/
+
+# Local recovery files and installer archives
+/local-archive/

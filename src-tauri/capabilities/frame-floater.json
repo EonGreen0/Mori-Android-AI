@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "frame-floater",
+  "description": "Receive favorites responses in the compact collection window",
+  "windows": ["frame-floater"],
+  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
+}

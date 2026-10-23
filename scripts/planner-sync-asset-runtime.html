@@ -1,0 +1,175 @@
+<!doctype html>
+<html>
+<head><meta charset="utf-8"><title>RUNNING</title></head>
+<body><pre id="result">RUNNING</pre>
+<script type="module">
+const result = document.getElementById("result");
+const assert = (condition, message) => { if (!condition) throw new Error(message); };
+const requestPromise = (request) => new Promise((resolve, reject) => {
+  request.onsuccess = () => resolve(request.result);
+  request.onerror = () => reject(request.error || new Error("request failed"));
+});
+
+try {
+  await requestPromise(indexedDB.deleteDatabase("mori_sync_v1"));
+
+  // Simulate an existing M1/M2 database before Asset Catalog existed.
+  const legacyRequest = indexedDB.open("mori_sync_v1", 1);
+  legacyRequest.onupgradeneeded = () => {
+    const db = legacyRequest.result;
+    db.createObjectStore("outbox", { keyPath: "opId" });
+    db.createObjectStore("meta", { keyPath: "key" });
+  };
+  const legacyDb = await requestPromise(legacyRequest);
+  legacyDb.close();
+
+  const {
+    createPlannerAssetLocalBinding,
+    plannerAssetFromPackageEntry,
+    preparePlannerImageAsset,
+  } = await import("../public/js/sync/assetCatalog.js");
+  const {
+    getPlannerAsset,
+    getPlannerAssetBinding,
+    listPlannerAssets,
+    putPlannerAsset,
+  } = await import("../public/js/sync/assetStore.js");
+  const { createSyncEnvelope, validateSyncEnvelope } = await import("../public/js/sync/model.js");
+  const { diffPlannerSyncEnvelopes } = await import("../public/js/sync/mutations.js");
+  const { stagePlannerBoardForSync } = await import("../public/js/sync/plannerJournal.js");
+
+  const canvas = document.createElement("canvas");
+  canvas.width = 2600;
+  canvas.height = 1000;
+  const ctx = canvas.getContext("2d");
+  ctx.fillStyle = "#eee";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  ctx.fillStyle = "#222";
+  ctx.fillRect(100, 100, 1000, 500);
+  const png = await new Promise((resolve) => canvas.toBlob(resolve, "image/png"));
+  const sourceBytes = new Uint8Array(await png.arrayBuffer());
+
+  const prepared = await preparePlannerImageAsset(sourceBytes, {
+    filename: "large-reference.png",
+    maxDisplaySide: 512,
+  });
+  assert(prepared.asset.id.startsWith("sha256:"), "source asset id missing");
+  assert(prepared.asset.source.hash === prepared.asset.id, "source hash/id mismatch");
+  assert(prepared.asset.source.mime === "image/png", "source mime mismatch");
+  assert(prepared.asset.source.width === 2600 && prepared.asset.source.height === 1000, "source dimensions wrong");
+  assert(prepared.asset.display.mime === "image/jpeg", "large image was not converted to JPEG display variant");
+  assert(prepared.asset.display.width === 512 && prepared.asset.display.height === 197, "display dimensions wrong");
+  assert(prepared.asset.display.hash !== prepared.asset.source.hash, "display/source hashes should differ after transform");
+  assert(prepared.asset.display.transformed === true, "display transformed flag missing");
+
+  const packaged = await plannerAssetFromPackageEntry({
+    id: prepared.asset.id,
+    filename: "large-reference.jpg",
+    mime: prepared.asset.display.mime,
+    originalBytes: prepared.asset.source.bytes,
+    source: prepared.asset.source,
+    display: prepared.asset.display,
+  }, prepared.displayBytes);
+  assert(packaged.id === prepared.asset.id, "new package Asset metadata did not round-trip");
+  assert(packaged.display.hash === prepared.asset.display.hash, "new package display hash mismatch");
+
+  const legacyPackaged = await plannerAssetFromPackageEntry({
+    id: prepared.asset.id,
+    filename: "legacy.jpg",
+    mime: prepared.asset.display.mime,
+    originalBytes: prepared.asset.source.bytes,
+  }, prepared.displayBytes);
+  assert(legacyPackaged.id === prepared.asset.id, "legacy package asset id was not preserved");
+  assert(legacyPackaged.source.mime === "", "legacy package should not invent original mime metadata");
+  assert(legacyPackaged.display.hash === prepared.asset.display.hash, "legacy display hash was not derived from bytes");
+
+  let corruptRejected = false;
+  try {
+    await plannerAssetFromPackageEntry({
+      id: prepared.asset.id,
+      filename: "corrupt.jpg",
+      mime: prepared.asset.display.mime,
+      display: { ...prepared.asset.display, hash: `sha256:${"0".repeat(64)}` },
+    }, prepared.displayBytes);
+  } catch (_) {
+    corruptRejected = true;
+  }
+  assert(corruptRejected, "new package display hash corruption was not rejected");
+
+  const binding = createPlannerAssetLocalBinding(prepared.asset.id, {
+    path: "D:\\Mori\\Planner\\large-reference.png",
+    uri: "file:///D:/Mori/Planner/large-reference.png",
+    filename: "large-reference.png",
+  });
+  await putPlannerAsset(prepared.asset, binding);
+
+  const storedAsset = await getPlannerAsset(prepared.asset.id);
+  const storedBinding = await getPlannerAssetBinding(prepared.asset.id);
+  assert(storedAsset?.id === prepared.asset.id, "asset metadata did not persist after v1->v2 upgrade");
+  assert(storedBinding?.path.includes("D:\\Mori"), "local binding did not persist");
+  assert(!JSON.stringify(storedAsset).includes("D:\\Mori"), "device path leaked into shared asset metadata");
+  assert((await listPlannerAssets()).length === 1, "asset catalog dedupe/list failed");
+
+  const previous = createSyncEnvelope({
+    project: { id: "project_asset", title: "Asset Test", payload: {} },
+    nodes: [], edges: [], assets: [],
+  });
+  const next = createSyncEnvelope({
+    project: { id: "project_asset", title: "Asset Test", payload: {} },
+    nodes: [], edges: [], assets: [storedAsset],
+  });
+  assert(validateSyncEnvelope(next).valid, "asset sync envelope validation failed");
+  const mutations = diffPlannerSyncEnvelopes(previous, next, {
+    deviceId: "asset_runtime",
+    timestamp: 1234,
+  });
+  assert(mutations.length === 1, `expected one asset mutation, got ${mutations.length}`);
+  assert(mutations[0].entityType === "asset", "asset mutation entity type wrong");
+  assert(mutations[0].entityId === prepared.asset.id, "asset mutation id wrong");
+  assert(mutations[0].baseExists === false, "asset creation baseExists should be false from known checkpoint");
+
+  const staged = await stagePlannerBoardForSync({
+    projectId: "project_asset_journal",
+    projectTitle: "Journal Asset Test",
+    nodes: [{
+      id: "image_asset_runtime",
+      type: "image",
+      assetId: prepared.asset.id,
+      fileKey: prepared.asset.id,
+      path: "D:\\Mori\\Planner\\large-reference.png",
+      uri: "file:///D:/Mori/Planner/large-reference.png",
+      thumbnail: "blob:local-only",
+      title: "Large Reference",
+      x: 10,
+      y: 20,
+      w: 280,
+      rotation: 0,
+      comment: "",
+    }],
+    edges: [],
+    view: { zoom: 0.8, panX: 12, panY: 34 },
+    importCount: 0,
+    commentFontSize: 17,
+    readOnly: false,
+  }, { deviceId: "asset_runtime", timestamp: 4321 });
+  assert(staged.shared.assets.length === 1, "planner journal did not attach referenced asset metadata");
+  assert(staged.mutations.some((mutation) => mutation.entityType === "asset"), "planner journal did not emit asset mutation");
+  assert(!JSON.stringify(staged.shared).includes("D:\\Mori"), "planner journal leaked device path into shared snapshot");
+  assert(!JSON.stringify(staged.shared).includes("blob:local-only"), "planner journal leaked local thumbnail into shared snapshot");
+
+  document.title = "PASS";
+  result.textContent = [
+    "PASS",
+    `asset=${prepared.asset.id}`,
+    `source=${prepared.asset.source.width}x${prepared.asset.source.height} ${prepared.asset.source.mime}`,
+    `display=${prepared.asset.display.width}x${prepared.asset.display.height} ${prepared.asset.display.mime}`,
+    "indexeddb-upgrade=v1->v2 ok",
+    "asset-mutation=ok",
+  ].join("\n");
+} catch (error) {
+  document.title = "FAIL";
+  result.textContent = `FAIL\n${error?.stack || error}`;
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,468 @@
+// app.js — entry point: boot, guide, nav, hardware back
+import { translations } from "./i18n/index.js";
+import {
+  triggerHaptic,
+  showToast,
+  stopAllMedia,
+  pauseAllMedia,
+  cleanupOrphanedTempFiles,
+  App,
+} from "./utils/index.js";
+
+import { setUIState, renderHistory, updateSliderUI } from "./ui.js";
+import { initAuthListeners, verifyLock } from "./modules/authManager.js";
+import {
+  autoClearOldHistory,
+  autoClearOldCache,
+  onHistoryItemClick,
+  onHistoryDeleteClick,
+  refreshAllVideoThumbnails,
+} from "./modules/history.js";
+import { handlePasteFromClipboard } from "./modules/intents.js";
+import {
+  APP_VERSION,
+  currentLang,
+  isEditingHistory,
+  isBatchMode,
+  setBatchMode,
+  batchToggleBtn,
+  batchCloseBtn,
+  batchModalOverlay,
+  batchUrlInput,
+  urlInput,
+  inputWrapper,
+  downloadBtn,
+  clearBtn,
+  pasteBtn,
+  isHistoryUnlocked,
+  isSettingsUnlocked,
+  setHistoryUnlocked,
+  setSettingsUnlocked,
+  setCurrentSlideIndex,
+  slideData,
+  currentSlideIndex,
+  slidePrevBtn,
+  slideNextBtn,
+  guideOverlay,
+  hideGuideCheckbox,
+  closeGuideBtn,
+  guideToSettingsBtn,
+  settingsMainMenu,
+  settingsSubPages,
+} from "./modules/core.js";
+
+// imports for side effects (settings UI, history, modals, update, intents, download)
+import "./modules/settings.js";
+import "./modules/history.js";
+import "./modules/modals.js";
+import "./modules/update.js";
+import "./modules/intents.js";
+import "./modules/clipboardInbox.js";
+import "./modules/download.js";
+import { initBgAnimation } from "./modules/bgAnimation.js";
+import { initInspiration, renderInspiration } from "./modules/inspiration.js";
+import { handleMobileInspirationBack } from "./modules/inspirationMobile.js";
+import { initPlanner, switchPlannerMode } from "./modules/planner.js";
+import { initFavoritesBridge } from "./modules/favoritesBridge.js";
+import { initAndroidAlbumPlannerControls } from "./sync/androidPlannerReadOnlySync.js";
+import { initManualAlbumSync } from "./sync/manualAlbumSync.js";
+import { initAlbumPackageControls } from "./modules/albumPackage.js";
+import { initAiOrganizer } from "./modules/aiOrganizer.js";
+import { initAiPlanner } from "./modules/aiPlanner.js";
+import { installTauriSyncTestLauncher } from "./sync/tauriSyncTestLauncher.js";
+
+if (window.Capacitor?.getPlatform?.() === "android") {
+  document.documentElement.classList.add("is-android");
+}
+
+initBgAnimation();
+initInspiration();
+initPlanner();
+initFavoritesBridge();
+initAndroidAlbumPlannerControls();
+initManualAlbumSync();
+initAlbumPackageControls();
+initAiOrganizer();
+initAiPlanner();
+installTauriSyncTestLauncher();
+
+const batchInboxPanel = document.getElementById("batchInboxPanel");
+
+// Batch Mode Toggle
+if (batchToggleBtn) {
+  batchToggleBtn.addEventListener("click", () => {
+    setBatchMode(!isBatchMode);
+    const lang = translations[currentLang];
+    if (isBatchMode) {
+      batchToggleBtn.classList.add("active");
+      inputWrapper?.classList.add("batch-active");
+      urlInput.classList.add("hidden");
+      batchUrlInput.classList.add("hidden");
+      batchInboxPanel?.classList.remove("hidden");
+      downloadBtn.textContent =
+        lang["batch-start-selected"] || "DOWNLOAD SELECTED LINKS";
+      clearBtn.classList.add("hidden");
+      pasteBtn.classList.add("hidden");
+      window.dispatchEvent(new CustomEvent("mori_batch_mode_opened"));
+    } else {
+      batchToggleBtn.classList.remove("active");
+      inputWrapper?.classList.remove("batch-active");
+      urlInput.classList.remove("hidden");
+      batchUrlInput.classList.add("hidden");
+      batchInboxPanel?.classList.add("hidden");
+      downloadBtn.textContent = lang["btn-analyze"] || "ANALYZE";
+      downloadBtn.disabled = false;
+      const isEmpty = urlInput.value === "";
+      clearBtn.classList.toggle("hidden", isEmpty);
+      pasteBtn.classList.toggle("hidden", !isEmpty);
+    }
+  });
+}
+
+if (batchCloseBtn) {
+  batchCloseBtn.addEventListener("click", () => {
+    batchModalOverlay?.classList.add("hidden");
+  });
+}
+
+const appVersionVal = document.querySelector("#checkUpdateBtn .info-val");
+if (appVersionVal) {
+  appVersionVal.textContent = " " + APP_VERSION;
+  if (App?.getInfo && window.Capacitor?.isNativePlatform?.()) {
+    App.getInfo().then(info => {
+      if (info?.version) appVersionVal.textContent = " " + info.version;
+    }).catch(() => {});
+  }
+}
+
+// Run guide check on startup
+function initUserGuide() {
+  const isHidden = localStorage.getItem("mori_hide_guide") === "true";
+  if (!isHidden) {
+    guideOverlay?.classList.remove("hidden");
+  }
+}
+
+closeGuideBtn?.addEventListener("click", () => {
+  if (hideGuideCheckbox?.checked) {
+    localStorage.setItem("mori_hide_guide", "true");
+  }
+  guideOverlay?.classList.add("hidden");
+});
+
+guideToSettingsBtn?.addEventListener("click", () => {
+  if (hideGuideCheckbox?.checked) {
+    localStorage.setItem("mori_hide_guide", "true");
+  }
+  guideOverlay?.classList.add("hidden");
+  switchPage("settings");
+});
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initUserGuide);
+} else {
+  initUserGuide();
+}
+
+// Prevent native long-press context menu and text selection toolbar on non-inputs
+document.addEventListener("contextmenu", (e) => {
+  const isInput =
+    e.target.tagName === "INPUT" ||
+    e.target.tagName === "TEXTAREA" ||
+    e.target.isContentEditable ||
+    e.target.closest(".selectable");
+  if (!isInput) {
+    e.preventDefault();
+  }
+});
+
+document.addEventListener("click", (e) => {
+  document
+    .querySelectorAll(".dropdown-menu")
+    .forEach((m) => m.classList.add("hidden"));
+
+  const interactive = e.target.closest(
+    "button, .nav-item, .settings-item, .toggle-switch, .dropdown-item, .paste-btn, .clear-btn, .chip",
+  );
+  if (interactive) {
+    triggerHaptic("medium");
+  }
+});
+
+// Slider Navigation (Delegated to UI module)
+slidePrevBtn?.addEventListener("click", () => {
+  if (currentSlideIndex > 0) {
+    setCurrentSlideIndex(currentSlideIndex - 1);
+    setUIState({ currentSlideIndex });
+    updateSliderUI();
+  }
+});
+
+slideNextBtn?.addEventListener("click", () => {
+  const sliderItems = slideData.filter((dl) => !dl.isMirror);
+  if (currentSlideIndex < sliderItems.length - 1) {
+    setCurrentSlideIndex(currentSlideIndex + 1);
+    setUIState({ currentSlideIndex });
+    updateSliderUI();
+  }
+});
+
+// Initialize App
+autoClearOldHistory();
+autoClearOldCache();
+cleanupOrphanedTempFiles();
+initAuthListeners(currentLang);
+setUIState({ currentLang, isEditingHistory });
+renderHistory(onHistoryItemClick, onHistoryDeleteClick);
+
+function refreshHistoryIfVisible() {
+  const historyPage = document.getElementById("historyPage");
+  if (historyPage && !historyPage.classList.contains("hidden")) {
+    renderHistory(onHistoryItemClick, onHistoryDeleteClick);
+  }
+}
+window.addEventListener("mori_download_started", refreshHistoryIfVisible);
+window.addEventListener("mori_download_ended", refreshHistoryIfVisible);
+window.addEventListener("mori_download_cancelled", refreshHistoryIfVisible);
+
+const pages = ["home", "inspiration", "history", "settings"];
+
+async function switchPage(pageId) {
+  if (
+    pageId !== "inspiration" &&
+    document.documentElement.classList.contains("planner-android-fullscreen")
+  ) {
+    switchPlannerMode("library");
+  }
+  const isPrivacyOn = localStorage.getItem("mori_privacy_lock") === "true";
+  const lockType = localStorage.getItem("mori_lock_type") || "none";
+
+  if ((pageId === "history" || pageId === "inspiration") && !isHistoryUnlocked) {
+    if (isPrivacyOn && lockType !== "none") {
+      const verified = await verifyLock("label-biometric-reason", currentLang);
+      if (verified) {
+        setHistoryUnlocked(true);
+      } else {
+        return;
+      }
+    } else {
+      setHistoryUnlocked(true);
+    }
+  }
+
+  if (pageId === "settings" && !isSettingsUnlocked) {
+    if (isPrivacyOn && lockType !== "none") {
+      const verified = await verifyLock("label-biometric-reason", currentLang);
+      if (verified) {
+        setSettingsUnlocked(true);
+      } else {
+        return;
+      }
+    } else {
+      setSettingsUnlocked(true);
+    }
+  }
+
+  const currentNavItems = document.querySelectorAll(".nav-item");
+  const item = Array.from(currentNavItems).find(
+    (i) => i.getAttribute("data-page") === pageId,
+  );
+  if (!item) return;
+
+  const targetPageId = pageId + "Page";
+  currentNavItems.forEach((i) => i.classList.remove("active"));
+  item.classList.add("active");
+
+  document
+    .querySelectorAll(".page-content")
+    .forEach((page) => page.classList.add("hidden"));
+  pauseAllMedia(document);
+
+  const modalOverlay = document.getElementById("modalOverlay");
+  if (modalOverlay && !modalOverlay.classList.contains("hidden")) {
+    const modalSlidesWrapper = document.getElementById("modalSlidesWrapper");
+    if (modalSlidesWrapper) {
+      stopAllMedia(modalSlidesWrapper);
+      modalSlidesWrapper.innerHTML = "";
+    }
+    modalOverlay.classList.add("hidden");
+    modalOverlay.style.display = "none";
+  }
+
+  const targetPage = document.getElementById(targetPageId);
+  if (targetPage) targetPage.classList.remove("hidden");
+
+  // Reset settings to main menu when entering settings page
+  if (pageId === "settings") {
+    settingsSubPages?.forEach((p) => p.classList.add("hidden"));
+    if (settingsMainMenu) settingsMainMenu.classList.remove("hidden");
+  }
+
+  if (pageId === "inspiration") {
+    renderInspiration();
+  }
+
+  // Refresh history if entering history page
+  if (pageId === "history") {
+    if (typeof window.checkAndMergePendingHistory === "function") {
+      window.checkAndMergePendingHistory();
+    } else {
+      renderHistory(onHistoryItemClick, onHistoryDeleteClick);
+    }
+    setTimeout(refreshAllVideoThumbnails, 3000);
+  }
+}
+
+setTimeout(refreshAllVideoThumbnails, 5000);
+
+window.addEventListener("mori_batch_completed", () => {
+  batchModalOverlay?.classList.add("hidden");
+  if (isBatchMode) batchToggleBtn?.click();
+  switchPage("inspiration");
+});
+
+// Global Event Delegation for Navigation Items
+document.addEventListener("click", (e) => {
+  const navItem = e.target.closest(".nav-item");
+  if (navItem) {
+    e.preventDefault();
+    const pageId = navItem.getAttribute("data-page");
+    if (pageId) {
+      switchPage(pageId);
+    }
+  }
+});
+
+let touchStartX = 0;
+let touchStartY = 0;
+let touchStartCount = 0;
+
+document.addEventListener(
+  "touchstart",
+  (e) => {
+    touchStartCount = e.touches?.length || e.changedTouches?.length || 1;
+    touchStartX = e.changedTouches[0].screenX;
+    touchStartY = e.changedTouches[0].screenY;
+  },
+  { passive: true },
+);
+
+document.addEventListener(
+  "touchend",
+  (e) => {
+    const target = e.target;
+    if (
+      document.documentElement.classList.contains("planner-android-fullscreen") ||
+      touchStartCount !== 1 ||
+      target.closest?.("#plannerViewport") ||
+      target.closest?.("#plannerMobileControls") ||
+      target.closest?.("#inspirationViewport, #albumMobileOverview, #albumMobilePreview")
+    ) {
+      touchStartCount = 0;
+      return;
+    }
+
+    const touchEndX = e.changedTouches[0].screenX;
+    const touchEndY = e.changedTouches[0].screenY;
+
+    const diffX = touchStartX - touchEndX;
+    const diffY = touchStartY - touchEndY;
+
+    if (Math.abs(diffY) > Math.abs(diffX)) return;
+
+    if (Math.abs(diffX) < 100) return;
+
+    if (
+      target.closest("#slidesWrapper") ||
+      target.closest(".slider-container") ||
+      target.closest(".media-slide") ||
+      target.closest(".slider-wrapper") ||
+      target.closest(".mori-player-container") ||
+      target.closest(".modal-overlay") ||
+      target.closest(".history-item-actions") ||
+      target.closest("input") ||
+      target.closest("button")
+    ) {
+      return;
+    }
+
+    const activeNavItem = document.querySelector(".nav-item.active");
+    if (!activeNavItem) return;
+
+    const currentPage = activeNavItem.getAttribute("data-page");
+    const currentIndex = pages.indexOf(currentPage);
+
+    if (diffX > 0 && currentIndex < pages.length - 1) {
+      switchPage(pages[currentIndex + 1]);
+    } else if (diffX < 0 && currentIndex > 0) {
+      switchPage(pages[currentIndex - 1]);
+    }
+  },
+  { passive: true },
+);
+
+// Initial Auto-Download Check
+setTimeout(() => {
+  const autoDownload = localStorage.getItem("mori_auto_download") === "true";
+  if (autoDownload) {
+    if (typeof handlePasteFromClipboard === "function") {
+      handlePasteFromClipboard(true);
+    }
+  }
+}, 2000);
+
+// Hardware Back Button Handler for Mobile
+let lastBackPressTime = 0;
+if (
+  window.Capacitor?.isNativePlatform?.() &&
+  App &&
+  typeof App.addListener === "function"
+) {
+  App.addListener("backButton", () => {
+    if (handleMobileInspirationBack()) return;
+    const openModal = document.querySelector(".modal-overlay:not(.hidden)");
+    if (openModal) {
+      openModal.classList.add("hidden");
+      return;
+    }
+
+    if (document.documentElement.classList.contains("planner-android-fullscreen")) {
+      switchPlannerMode("library");
+      return;
+    }
+
+    const activeSubPage = document.querySelector(
+      ".settings-sub-page:not(.hidden)",
+    );
+    if (activeSubPage) {
+      if (activeSubPage.id === "settingsLiveBg") {
+        activeSubPage.classList.add("hidden");
+        document
+          .getElementById("settingsAppearance")
+          ?.classList.remove("hidden");
+        return;
+      }
+      activeSubPage.classList.add("hidden");
+      document.getElementById("settingsMainMenu")?.classList.remove("hidden");
+      return;
+    }
+
+    const activeNavItem = document.querySelector(".nav-item.active");
+    const currentPage = activeNavItem
+      ? activeNavItem.getAttribute("data-page")
+      : "home";
+    if (currentPage !== "home") {
+      switchPage("home");
+      return;
+    }
+
+    const now = Date.now();
+    if (now - lastBackPressTime < 2000) {
+      App.exitApp();
+    } else {
+      lastBackPressTime = now;
+      const lang = translations[currentLang] || translations.en;
+      showToast(lang["toast-press-back-exit"] || "Press back again to exit");
+    }
+  });
+}

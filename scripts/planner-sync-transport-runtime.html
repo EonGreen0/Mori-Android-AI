@@ -1,0 +1,162 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>RUNNING</title>
+<pre id="result">RUNNING</pre>
+<script type="module">
+  import { createSyncTransport, SYNC_TRANSPORT_CAPABILITIES } from "../public/js/sync/transport.js";
+  import { pushPlannerOutboxOnce, fetchPlannerRemoteChanges } from "../public/js/sync/syncEngine.js";
+  import { createPlannerMutation, PLANNER_MUTATION_OPERATIONS } from "../public/js/sync/mutations.js";
+  import { enqueuePlannerMutations, listPlannerOutbox } from "../public/js/sync/outbox.js";
+  import { putPlannerAsset } from "../public/js/sync/assetStore.js";
+  import { sha256Hex, sha256AssetId } from "../public/js/sync/assetCatalog.js";
+  import { ensurePlannerDisplayAssetRemote, downloadPlannerDisplayAsset } from "../public/js/sync/assetTransfer.js";
+  import { getRemoteAssetState, REMOTE_ASSET_PRESENCE } from "../public/js/sync/remoteAssetState.js";
+  import { openPlannerSyncDb, PLANNER_SYNC_STORES } from "../public/js/sync/database.js";
+
+  const result = document.getElementById("result");
+  const log = [];
+  const assert = (value, message) => { if (!value) throw new Error(message); };
+
+  try {
+    const projectId = `transport_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+    const remoteOps = new Set();
+    const remoteAssets = new Map();
+    let pushCall = 0;
+    let failNextPush = false;
+
+    const transport = createSyncTransport({
+      id: "fake-cloud",
+      capabilities: Object.values(SYNC_TRANSPORT_CAPABILITIES),
+      async listProjects() {
+        return { projects: [{ projectId, title: "Transport fixture", revision: 0, updatedAt: 0 }] };
+      },
+      async pushMutations({ mutations }) {
+        pushCall += 1;
+        if (failNextPush) {
+          failNextPush = false;
+          throw new Error("simulated offline");
+        }
+        if (pushCall === 1 && mutations.length > 1) {
+          remoteOps.add(mutations[0].opId);
+          return {
+            acknowledgedOpIds: [mutations[0].opId],
+            rejected: [{ opId: mutations[1].opId, code: "busy", message: "retry", retryable: true }],
+          };
+        }
+        mutations.forEach((mutation) => remoteOps.add(mutation.opId));
+        return { acknowledgedOpIds: mutations.map((mutation) => mutation.opId) };
+      },
+      async pullChanges({ cursor }) {
+        return {
+          changes: [{ revision: 7, entityType: "node", entityId: "remote_node", operation: "upsert" }],
+          cursor: cursor ? `${cursor}:next` : "cursor:1",
+          hasMore: false,
+        };
+      },
+      async getAssetStates({ assetIds }) {
+        return {
+          states: assetIds.map((assetId) => {
+            const entry = remoteAssets.get(assetId);
+            return entry
+              ? { assetId, metadata: "present", display: "present", original: "missing", displayHash: entry.hash, displayRef: `fake://${assetId}` }
+              : { assetId, metadata: "missing", display: "missing", original: "missing" };
+          }),
+        };
+      },
+      async uploadDisplayAsset({ asset, bytes, hash }) {
+        remoteAssets.set(asset.id, { bytes: new Uint8Array(bytes), hash });
+        return { displayRef: `fake://${asset.id}`, original: "missing" };
+      },
+      async downloadDisplayAsset({ assetId }) {
+        const entry = remoteAssets.get(assetId);
+        if (!entry) throw new Error("missing remote asset");
+        return { bytes: entry.bytes, contentType: "application/octet-stream", displayRef: `fake://${assetId}` };
+      },
+    });
+
+    const makeMutation = (entityId, suffix) => createPlannerMutation({
+      projectId,
+      entityType: "node",
+      entityId,
+      operation: PLANNER_MUTATION_OPERATIONS.UPSERT,
+      payload: { id: entityId, type: "text", text: suffix },
+      baseExists: true,
+      deviceId: "runtime-device",
+      opId: `op_${entityId}_${suffix}_${projectId}`,
+    });
+
+    await enqueuePlannerMutations([
+      makeMutation("node_a", "a1"),
+      makeMutation("node_b", "b1"),
+    ]);
+    const first = await pushPlannerOutboxOnce({ transport, projectId, deviceId: "runtime-device" });
+    assert(first.status === "partial", `expected partial first push, got ${first.status}`);
+    let remaining = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(remaining.length === 1, `expected one rejected operation, got ${remaining.length}`);
+    const rejectedOpId = remaining[0].opId;
+    assert(remaining[0].attempts === 1, "rejected operation attempt count not persisted");
+    assert(remaining[0].lastError.includes("busy"), "rejected operation error not persisted");
+
+    const second = await pushPlannerOutboxOnce({ transport, projectId, deviceId: "runtime-device" });
+    assert(second.status === "ok", `expected retry success, got ${second.status}`);
+    assert(remoteOps.has(rejectedOpId), "retry did not use the same sealed opId");
+    remaining = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(remaining.length === 0, "acknowledged retry was not removed");
+    log.push("partial ACK + stable retry opId ok");
+
+    const offlineMutation = makeMutation("node_c", "c1");
+    await enqueuePlannerMutations([offlineMutation]);
+    failNextPush = true;
+    const offline = await pushPlannerOutboxOnce({ transport, projectId, deviceId: "runtime-device" });
+    assert(offline.status === "error", "offline push should return error status");
+    remaining = await listPlannerOutbox({ projectId, limit: 20 });
+    assert(remaining.length === 1 && remaining[0].opId === offlineMutation.opId, "offline mutation was not retained");
+    assert(remaining[0].attempts === 1, "offline attempt count not persisted");
+    const recovered = await pushPlannerOutboxOnce({ transport, projectId, deviceId: "runtime-device" });
+    assert(recovered.status === "ok", "offline retry did not recover");
+    log.push("offline retention + retry ok");
+
+    const pulled = await fetchPlannerRemoteChanges({ transport, projectId, cursor: null });
+    assert(pulled.changes.length === 1 && pulled.cursor === "cursor:1", "pull contract failed");
+    log.push("pull contract ok");
+
+    const displayBytes = new TextEncoder().encode("mori-display-runtime-asset");
+    const displayHash = sha256AssetId(await sha256Hex(displayBytes));
+    const asset = {
+      id: displayHash,
+      type: "image",
+      source: { hash: displayHash, mime: "image/png", ext: "png", width: 1, height: 1, bytes: displayBytes.length },
+      display: { hash: displayHash, mime: "image/png", ext: "png", width: 1, height: 1, bytes: displayBytes.length, transformed: false },
+    };
+    await putPlannerAsset(asset, { assetId: asset.id, path: "D:/local-only.png", uri: "D:/local-only.png" });
+    const upload = await ensurePlannerDisplayAssetRemote({
+      transport,
+      assetId: asset.id,
+      getDisplayBytes: async () => displayBytes,
+    });
+    assert(upload.uploaded === true, "missing display asset was not uploaded");
+    const cached = await ensurePlannerDisplayAssetRemote({
+      transport,
+      assetId: asset.id,
+      getDisplayBytes: async () => { throw new Error("should not regenerate already-present display"); },
+    });
+    assert(cached.uploaded === false, "present display asset should skip upload");
+    const remoteState = await getRemoteAssetState(transport.id, asset.id);
+    assert(remoteState.display === REMOTE_ASSET_PRESENCE.PRESENT, "remote display state not persisted");
+    assert(!JSON.stringify(remoteState).includes("D:/local-only"), "local path leaked into remote state");
+    const downloaded = await downloadPlannerDisplayAsset({ transport, assetId: asset.id });
+    assert(new TextDecoder().decode(downloaded.bytes) === "mori-display-runtime-asset", "downloaded display bytes mismatch");
+    log.push("asset remote state + upload/download hash verification ok");
+
+    const db = await openPlannerSyncDb();
+    assert(db.version === 3, `expected IndexedDB v3, got ${db.version}`);
+    assert(db.objectStoreNames.contains(PLANNER_SYNC_STORES.ASSET_REMOTE_STATE), "remote asset state store missing");
+    log.push("IndexedDB v3 migration ok");
+
+    document.title = "PASS";
+    result.textContent = `PASS\n${log.join("\n")}`;
+  } catch (error) {
+    document.title = "FAIL";
+    result.textContent = `FAIL\n${error?.stack || error}`;
+  }
+</script>

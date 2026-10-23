@@ -1,0 +1,42 @@
+name: Bug report
+description: Report a reproducible Mori Android AI issue
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Do not include API keys, sync tokens, signing material, private media, or account credentials.
+  - type: input
+    id: version
+    attributes:
+      label: Mori version
+      placeholder: 4.9.3 (44)
+    validations:
+      required: true
+  - type: input
+    id: android
+    attributes:
+      label: Android device and version
+      placeholder: Pixel 8, Android 15
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Describe the exact screen and actions.
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result and error text
+    validations:
+      required: true
