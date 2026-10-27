@@ -3010,6 +3010,15 @@ function renderNodes() {
   nodes.innerHTML = "";
   board.nodes.forEach((node) => mountPlannerNode(node, { deferUi: true }));
   if (empty) empty.classList.toggle("hidden", board.nodes.length > 0);
+  empty?.querySelector(".planner-empty-actions")?.classList.toggle("hidden", board.readOnly);
+  if (board.nodes.length === 0) {
+    const controls = document.getElementById("plannerMobileControls");
+    if (controls) controls.scrollLeft = 0;
+  }
+  const mobileClear = document.getElementById("plannerMobileClearBtn");
+  if (mobileClear) {
+    mobileClear.classList.toggle("hidden", board.readOnly || board.nodes.length === 0);
+  }
   updateSelectionUI();
   requestAnimationFrame(renderEdges);
 }
@@ -3244,7 +3253,8 @@ function fitAllContent() {
   );
   board.view.zoom = zoom;
   board.view.panX = viewport.clientWidth / 2 - ((minX + maxX) / 2) * zoom;
-  board.view.panY = viewport.clientHeight / 2 - ((minY + maxY) / 2) * zoom;
+  board.view.panY = viewport.clientHeight / 2 - ((minY + maxY) / 2) * zoom +
+    (isAndroidNative() ? 58 : 0);
   applyPlannerTransform();
   saveBoard();
 }
@@ -3262,6 +3272,82 @@ export function getPlannerAiImages() {
       savedAt: Number(node.savedAt) || 0,
       confidence: 0,
     }));
+}
+
+export function removePlannerContentForAlbumSource({ albumId, sourceUrl, fileKeys = [] } = {}) {
+  if (!albumId) return { imagesRemoved: 0, groupsRemoved: 0 };
+  const linked = getAlbumPlannerProject(albumId);
+  if (!linked?.projectId) return { imagesRemoved: 0, groupsRemoved: 0 };
+  const active = activePlannerAlbumId === albumId && activePlannerProjectId === linked.projectId;
+  const target = active ? board : loadProjectBoard(linked.projectId);
+  if (!target || target.readOnly) return { imagesRemoved: 0, groupsRemoved: 0 };
+
+  const normalizedFiles = new Set(
+    (Array.isArray(fileKeys) ? fileKeys : [])
+      .filter(Boolean)
+      .map(normalizePlannerFileKey),
+  );
+  const source = String(sourceUrl || "");
+  const removedImageIds = new Set(
+    target.nodes
+      .filter(node => {
+        if (node.type !== "image" || node.albumId !== albumId) return false;
+        if (source && String(node.sourceUrl || "") === source) return true;
+        return [node.fileKey, node.path, node.uri]
+          .filter(Boolean)
+          .some(value => normalizedFiles.has(normalizePlannerFileKey(value)));
+      })
+      .map(node => node.id),
+  );
+  if (!removedImageIds.size) return { imagesRemoved: 0, groupsRemoved: 0 };
+
+  const affectedGeneratedGroups = new Set(
+    target.nodes
+      .filter(node =>
+        node.type === "group" &&
+        node.aiGeneratedPlanner === true &&
+        (node.memberIds || []).some(id => removedImageIds.has(id)))
+      .map(node => node.id),
+  );
+  target.nodes = target.nodes
+    .filter(node => !removedImageIds.has(node.id))
+    .map(node => node.type === "group"
+      ? {
+          ...node,
+          memberIds: (node.memberIds || []).filter(id => !removedImageIds.has(id)),
+          ...(affectedGeneratedGroups.has(node.id) ? { summaryNodeId: "" } : {}),
+        }
+      : node);
+  target.edges = target.edges.filter(edge =>
+    !removedImageIds.has(edge.from) && !removedImageIds.has(edge.to));
+
+  const removedGeneratedGroups = new Set();
+  target.nodes.forEach(node => {
+    if (node.type !== "group" || node.aiGeneratedPlanner !== true) return;
+    if ((node.memberIds || []).length === 0) removedGeneratedGroups.add(node.id);
+  });
+  if (removedGeneratedGroups.size) {
+    target.nodes = target.nodes.filter(node =>
+      !removedGeneratedGroups.has(node.id) &&
+      !(node.aiGeneratedPlanner === true && removedGeneratedGroups.has(node.aiSummaryForGroup)));
+  }
+  target.nodes = target.nodes.filter(node =>
+    !(node.aiGeneratedPlanner === true &&
+      node.aiSummaryForGroup &&
+      affectedGeneratedGroups.has(node.aiSummaryForGroup)));
+
+  if (active) {
+    selectedNodeIds.clear();
+    selectedEdgeId = null;
+    saveBoard();
+    renderPlanner({ full: true });
+  } else {
+    localStorage.setItem(plannerBoardStorageKey(linked.projectId), JSON.stringify(target));
+  }
+  return {
+    imagesRemoved: removedImageIds.size,
+    groupsRemoved: removedGeneratedGroups.size,
+  };
 }
 
 export function ensureEditablePlannerCopy() {
@@ -3284,6 +3370,33 @@ export function ensureEditablePlannerCopy() {
   return true;
 }
 
+function aiPlannerGroupBrief(group) {
+  const analyses = (Array.isArray(group?.analyses) ? group.analyses : [])
+    .filter(analysis => analysis && typeof analysis === "object");
+  const unique = (values) => [...new Set(values
+    .map(value => String(value || "").trim())
+    .filter(Boolean))];
+  const cameraFields = [
+    ["ai-param-focal", analyses.map(item => item.camera?.focalLength)],
+    ["ai-param-aperture", analyses.map(item => item.camera?.aperture)],
+    ["ai-param-shutter", analyses.map(item => item.camera?.shutter)],
+    ["ai-param-iso", analyses.map(item => item.camera?.iso)],
+  ];
+  const camera = cameraFields
+    .map(([label, values]) => [t(label), unique(values).slice(0, 2).join(" / ")])
+    .filter(([, value]) => value)
+    .map(([label, value]) => `${label} ${value}`);
+  const lines = [];
+  if (camera.length) lines.push(camera.join(" · ").slice(0, 180));
+  const composition = unique(analyses.map(item => item.composition)).slice(0, 1);
+  if (composition.length) lines.push(`${t("ai-result-composition")}：${composition.join("；")}`);
+  const poseAdvice = unique(analyses.map(item => item.poseAdvice)).slice(0, 1);
+  if (poseAdvice.length) lines.push(`${t("ai-result-pose-advice")}：${poseAdvice.join("；")}`);
+  const lighting = unique(analyses.map(item => item.camera?.lighting)).slice(0, 1);
+  if (lighting.length) lines.push(`${t("ai-param-light")}：${lighting.join("；")}`);
+  return lines.join("\n").slice(0, 320);
+}
+
 export function applyAiPlannerPlan(plan = []) {
   if (board.readOnly) throw new Error("当前策划为只读，不能应用 AI 排版");
   const imageIds = new Set(getPlannerAiImages().map(image => image.id));
@@ -3291,6 +3404,7 @@ export function applyAiPlannerPlan(plan = []) {
     .map(group => ({
       code: String(group?.code || "other"),
       title: String(group?.title || group?.code || "AI"),
+      analyses: Array.isArray(group?.analyses) ? group.analyses : [],
       nodeIds: [...new Set((Array.isArray(group?.nodeIds) ? group.nodeIds : []).map(String))]
         .filter(id => imageIds.has(id)),
     }))
@@ -3300,6 +3414,7 @@ export function applyAiPlannerPlan(plan = []) {
   board.nodes = board.nodes.filter(node => node.aiGeneratedPlanner !== true);
   const imageNodes = new Map(board.nodes.filter(node => node.type === "image").map(node => [node.id, node]));
   const groups = [];
+  const generatedNodes = [];
   let groupY = 80;
   const columnWidth = 300;
   const rowHeight = 360;
@@ -3307,7 +3422,9 @@ export function applyAiPlannerPlan(plan = []) {
     const columns = Math.min(3, group.nodeIds.length);
     const rows = Math.ceil(group.nodeIds.length / 3);
     const width = Math.max(430, columns * columnWidth + 70);
-    const height = Math.max(340, rows * rowHeight + 100);
+    const brief = aiPlannerGroupBrief(group);
+    const height = Math.max(340, rows * rowHeight + 100) + (brief ? 320 : 0);
+    const noteId = brief ? id("ai_note") : "";
     const groupNode = {
       id: id("ai_group"),
       type: "group",
@@ -3318,6 +3435,7 @@ export function applyAiPlannerPlan(plan = []) {
       h: height,
       rotation: 0,
       memberIds: [...group.nodeIds],
+      summaryNodeId: noteId || "",
       aiGeneratedPlanner: true,
       aiPose: group.code,
     };
@@ -3331,9 +3449,25 @@ export function applyAiPlannerPlan(plan = []) {
       node.userSized = true;
     });
     groups.push(groupNode);
+    generatedNodes.push(groupNode);
+    if (brief) {
+      generatedNodes.push({
+        id: noteId,
+        type: "text",
+        text: brief,
+        x: groupNode.x + 40,
+        y: groupNode.y + 80 + rows * rowHeight + 4,
+        w: width - 80,
+        fontSize: 16,
+        textColor: "#3e3e43",
+        background: "#fffdf8",
+        aiGeneratedPlanner: true,
+        aiSummaryForGroup: groupNode.id,
+      });
+    }
     groupY += height + 80;
   }
-  board.nodes = [...groups, ...board.nodes];
+  board.nodes = [...generatedNodes, ...board.nodes];
   selectedNodeIds.clear();
   selectedEdgeId = null;
   saveBoard({ captureSync: isAndroidNative() ? false : undefined });
@@ -3382,6 +3516,11 @@ function clearPlanner() {
     selectedEdgeId = null;
     saveBoard();
     renderPlanner();
+    requestAnimationFrame(() => {
+      const controls = document.getElementById("plannerMobileControls");
+      if (controls) controls.scrollTo({ left: 0, behavior: "smooth" });
+      document.getElementById("plannerEmptyAddTextBtn")?.focus({ preventScroll: true });
+    });
   });
 }
 
@@ -4237,6 +4376,28 @@ export function initPlanner() {
     const rect = viewport.getBoundingClientRect();
     const point = viewportPointToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
     addGroupAt(point.x - 260, point.y - 160);
+  });
+  const addTextFromEmpty = (event) => {
+    event.stopPropagation();
+    const { viewport } = plannerElements();
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const point = viewportPointToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    addTextAt(point.x, point.y);
+  };
+  const addGroupFromEmpty = (event) => {
+    event.stopPropagation();
+    const { viewport } = plannerElements();
+    if (!viewport) return;
+    const rect = viewport.getBoundingClientRect();
+    const point = viewportPointToWorld(rect.left + rect.width / 2, rect.top + rect.height / 2);
+    addGroupAt(point.x - 260, point.y - 160);
+  };
+  document.getElementById("plannerEmptyAddTextBtn")?.addEventListener("click", addTextFromEmpty);
+  document.getElementById("plannerEmptyAddGroupBtn")?.addEventListener("click", addGroupFromEmpty);
+  document.getElementById("plannerEmptyAddAlbumBtn")?.addEventListener("click", (event) => {
+    event.stopPropagation();
+    addAlbumToPlanner();
   });
   document.getElementById("plannerMobileClearBtn")?.addEventListener("click", event => {
     event.stopPropagation();

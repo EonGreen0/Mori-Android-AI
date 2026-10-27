@@ -661,13 +661,13 @@
           <div id="plannerViewport" class="planner-viewport hidden" tabindex="0">
             <div id="plannerMobileControls" class="planner-mobile-controls hidden" aria-label="Mobile planner controls">
               <button id="plannerMobileBackBtn" type="button"><span aria-hidden="true">←</span><span data-i18n="planner-mobile-back">相册</span></button>
+              <button id="plannerMobileAddTextBtn" type="button" class="hidden" data-i18n="planner-add-text">添加文字</button>
+              <button id="plannerMobileAddGroupBtn" type="button" class="hidden" data-i18n="planner-mobile-add-group">分组框</button>
+              <button id="plannerMobileAiLayoutBtn" type="button" data-i18n="ai-planner-button">AI 策划</button>
               <button id="plannerMobileZoomOutBtn" type="button" aria-label="Zoom out">−</button>
               <button id="plannerMobileZoomLabel" type="button" aria-label="Reset zoom">100%</button>
               <button id="plannerMobileZoomInBtn" type="button" aria-label="Zoom in">+</button>
               <button id="plannerMobileFitBtn" type="button" data-i18n="planner-fit-all">适应全部内容</button>
-              <button id="plannerMobileAiLayoutBtn" type="button" data-i18n="ai-planner-button">AI 策划</button>
-              <button id="plannerMobileAddTextBtn" type="button" class="hidden" data-i18n="planner-add-text">添加文字</button>
-              <button id="plannerMobileAddGroupBtn" type="button" class="hidden" data-i18n="planner-mobile-add-group">分组框</button>
               <button id="plannerMobileClearBtn" type="button" class="hidden" data-i18n="planner-mobile-clear">清空</button>
               <button id="plannerMobileUploadChangesBtn" type="button" class="hidden">上传修改</button>
               <span id="plannerMobileSyncStatus" class="planner-mobile-sync-status hidden" role="status" aria-live="polite"></span>
@@ -692,7 +692,12 @@
               <button id="plannerSelectionDelete" class="danger" type="button" data-i18n="planner-delete-image">Delete</button>
             </div>
             <div id="plannerEmpty" class="planner-empty">
-              <p data-i18n="planner-empty">Add an album to the plan, or double-click the canvas to add text.</p>
+              <p data-i18n="planner-empty-actions-message">画布已清空。添加文字、分组框，或重新加入当前相册图片。</p>
+              <div class="planner-empty-actions">
+                <button id="plannerEmptyAddTextBtn" type="button" data-i18n="planner-empty-add-text">添加文字</button>
+                <button id="plannerEmptyAddGroupBtn" type="button" data-i18n="planner-empty-add-group">添加分组框</button>
+                <button id="plannerEmptyAddAlbumBtn" type="button" data-i18n="planner-empty-add-album">加入当前相册图片</button>
+              </div>
             </div>
           </div>
         </div>

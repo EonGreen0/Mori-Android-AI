@@ -1,5 +1,14 @@
 # Changelog
 
+## 4.9.7 — 2026-10-27
+
+- Add a per-photo AI identify action beside the original-link action in the mobile album preview.
+- Support horizontal drag and swipe between previous and next album photos with directional transitions.
+- Cache single-photo AI results under the same image identity used by Planner, avoiding duplicate model requests.
+- Rework AI Planner into a planning layer over existing analysis: pose groups now include consolidated camera settings, composition, pose and lighting notes.
+- Keep actionable Add Text, Add Group and Add Album Photos controls visible after clearing a mobile plan.
+- Remove images, generated groups and AI summary notes from the linked Planner project when an album source link is deleted.
+
 ## 4.9.6 — 2026-10-27
 
 - Let users choose whether downloaded images stay in the Mori private cache or are also written to the phone gallery.

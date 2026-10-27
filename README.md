@@ -7,7 +7,7 @@
 
 > This is an unofficial derivative. The Android AI edition is developed by [EonGreen0](https://github.com/EonGreen0) and is not affiliated with the upstream author.
 
-当前版本：**4.9.6**
+当前版本：**4.9.7**
 
 ## 功能
 
@@ -25,6 +25,7 @@
 - 在解析结果页选择现有相册或直接新建相册。
 - 下载图片时可选“仅保存到 Mori”或“同时保存到手机相册”；默认推荐 Mori 私有缓存，避免链接素材挤占系统相册。
 - 相册内每个来源链接都有独立操作菜单，可删除链接及关联图片；系统相册副本无权限删除时，会提示手动清理。
+- 单击图片进入全屏预览后可左右滑动切换上一张和下一张；底部“打开原链接”旁可直接对当前图片执行 AI 识别。
 - 长按相册封面可重命名、合并到其他相册或删除归类；删除不会删除原图片。
 - 支持本地相册包 `.mori-album` 导入。
 
@@ -51,6 +52,11 @@ AI 分类保留在用户原有相册内部。例如“花海拍摄”仍是主�
 </p>
 
 <p align="center">
+  <img src="docs/images/single-image-ai-actions.png" width="31%" alt="单图 AI 识别与左右切换">
+  <img src="docs/images/single-image-ai-result.png" width="31%" alt="单图 AI 分析结果">
+</p>
+
+<p align="center">
   <img src="docs/images/ai-album-categories.png" width="31%" alt="相册内 AI 姿势分类">
   <img src="docs/images/ai-analysis-sheet.png" width="31%" alt="逐图上滑 AI 分析">
   <img src="docs/images/ai-planner.png" width="31%" alt="Android AI 策划">
@@ -64,8 +70,15 @@ AI 分类保留在用户原有相册内部。例如“花海拍摄”仍是主�
 - 支持文字、分组框、清空、图片移动、缩放、旋转、连线与删除。
 - AI 策划会复用已有图片分析，按姿势创建分组框并执行三列画布排版。
 - AI 排版保留用户文字和备注；再次执行只替换之前的 AI 分组框。
+- AI 策划复用相册单图识别结果，按姿势分组，并把焦段、光圈、快门、ISO、构图、动作和光线建议整理成组内拍摄摘要。
+- 单张图片已识别后不会在策划页重复请求模型；策划只补充尚未分析的图片。
 - 在只读云端策划上执行 AI 策划时，会先创建可编辑的本地副本并明确提示。
 - AI 逐张分析期间会显示持续进度通知；Android 16 和支持实时通知的设备可在顶部显示当前张数、总数和文件名。OPPO 等厂商是否提升为流体云样式由系统控制。
+
+<p align="center">
+  <img src="docs/images/planner-ai-briefs.png" width="31%" alt="AI 分组与拍摄摘要">
+  <img src="docs/images/planner-empty-actions.png" width="31%" alt="清空策划后的添加入口">
+</p>
 
 ### 同步
 
@@ -127,7 +140,7 @@ npm run build:android
 Debug APK 输出：
 
 ```text
-android/app/build/outputs/apk/debug/Mori v4.9.6.apk
+android/app/build/outputs/apk/debug/Mori v4.9.7.apk
 ```
 
 Release 构建需要在项目外配置：

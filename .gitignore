@@ -98,6 +98,7 @@ src-scrapers/
 !/scripts/verify-album-edit.mjs
 !/scripts/verify-link-album-assignment.mjs
 !/scripts/verify-ai-organizer.mjs
+!/scripts/verify-single-ai-planner-flow.mjs
 !/scripts/verify-android-local-planner.mjs
 !/scripts/verify-download-cache-and-link-delete.mjs
 !/scripts/verify-rednote-scraper.mjs

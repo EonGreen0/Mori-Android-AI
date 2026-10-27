@@ -331,7 +331,7 @@ async function analyzeFile(file, config, index, total) {
   return { analysis, cached: false, imageHash, file, fileKey };
 }
 
-export async function ensureAiImageAnalysis(file) {
+export async function ensureAiImageAnalysisResult(file) {
   const config = readAiConfig();
   if (!getAiBridge() || !config.model || !(await aiCredentialAvailable())) {
     throw new Error(t("ai-not-configured"));
@@ -347,7 +347,16 @@ export async function ensureAiImageAnalysis(file) {
     updatedAt: Date.now(),
   });
   await refreshAiFileAnalyses({ render: false });
-  return result.analysis;
+  return {
+    analysis: result.analysis,
+    cached: result.cached,
+    imageHash: result.imageHash,
+    fileKey: result.fileKey,
+  };
+}
+
+export async function ensureAiImageAnalysis(file) {
+  return (await ensureAiImageAnalysisResult(file)).analysis;
 }
 
 export async function runAiAlbumOrganization() {

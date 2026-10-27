@@ -1,5 +1,11 @@
 // Android album presentation. Existing album and Planner identities stay in inspiration.js.
 import { t } from "../i18n/index.js";
+import { showToast } from "../utils/index.js";
+import {
+  finishAiAnalysisProgress,
+  isAiAnalysisProgressActive,
+  startAiAnalysisProgress,
+} from "./aiProgress.js";
 
 let callbacks;
 let overview = true;
@@ -9,6 +15,8 @@ let previewFiles = [];
 let previewIndex = 0;
 let returnFocus = null;
 let previewGroup = null;
+let previewTransitioning = false;
+let previewAnalyzing = false;
 
 export const isMobileInspiration = () => window.Capacitor?.getPlatform?.() === "android";
 export const isMobileAlbumOverview = () => isMobileInspiration() && overview;
@@ -117,12 +125,11 @@ export function initMobileInspiration(options) {
   preview.setAttribute("role", "dialog");
   preview.setAttribute("aria-modal", "true");
   preview.setAttribute("aria-label", t("album-preview"));
-  preview.innerHTML = `<button type="button" class="album-preview-close album-icon-button" aria-label="${t("album-close")}">${icon("close")}</button><div class="album-preview-image"><img alt="" /></div><button type="button" id="albumPreviewAiToggle" class="album-preview-ai-toggle hidden">${t("ai-swipe-up")}</button><div class="album-preview-footer"><button type="button" class="album-icon-button" data-photo-step="-1" aria-label="${t("album-previous")}">${icon("chevron_left")}</button><span id="albumPreviewCount" aria-live="polite"></span><button type="button" class="album-icon-button" data-photo-step="1" aria-label="${t("album-next")}">${icon("chevron_right")}</button><button type="button" id="albumPreviewSource">${t("inspiration-open-source")}${icon("open_in_new")}</button></div><section id="albumPreviewAiSheet" class="album-preview-ai-sheet hidden" aria-label="${t("ai-result-title")}"><button type="button" class="album-preview-ai-sheet-handle" aria-label="${t("ai-sheet-close-handle")}"><span></span></button><div class="album-preview-ai-sheet-body"></div></section>`;
+  preview.innerHTML = `<button type="button" class="album-preview-close album-icon-button" aria-label="${t("album-close")}">${icon("close")}</button><div class="album-preview-image"><img alt="" /></div><button type="button" id="albumPreviewAiToggle" class="album-preview-ai-toggle hidden">${t("ai-swipe-up")}</button><div class="album-preview-footer"><div class="album-preview-pagination"><button type="button" class="album-icon-button" data-photo-step="-1" aria-label="${t("album-previous")}">${icon("chevron_left")}</button><span id="albumPreviewCount" aria-live="polite"></span><button type="button" class="album-icon-button" data-photo-step="1" aria-label="${t("album-next")}">${icon("chevron_right")}</button></div><div class="album-preview-actions"><button type="button" id="albumPreviewSource">${t("inspiration-open-source")}${icon("open_in_new")}</button><button type="button" id="albumPreviewAiIdentify"><span aria-hidden="true">✦</span><span class="album-preview-ai-identify-label">${t("ai-identify-image")}</span></button></div></div><section id="albumPreviewAiSheet" class="album-preview-ai-sheet hidden" aria-label="${t("ai-result-title")}"><button type="button" class="album-preview-ai-sheet-handle" aria-label="${t("ai-sheet-close-handle")}"><span></span></button><div class="album-preview-ai-sheet-body"></div></section>`;
   document.body.appendChild(preview);
   preview.querySelector(".album-preview-close").addEventListener("click", () => closeDialog(preview.id));
   preview.querySelectorAll("[data-photo-step]").forEach(button => button.addEventListener("click", () => {
-    previewIndex += Number(button.dataset.photoStep);
-    renderPreview();
+    changePreview(Number(button.dataset.photoStep));
   }));
   preview.querySelector("#albumPreviewSource").addEventListener("click", () => callbacks.openSource(previewGroup.item.sourceUrl || previewGroup.item.url));
   const setAiSheetOpen = (open) => {
@@ -135,6 +142,49 @@ export function initMobileInspiration(options) {
     toggle.setAttribute("aria-expanded", String(open));
   };
   preview.querySelector("#albumPreviewAiToggle").addEventListener("click", () => setAiSheetOpen(true));
+  preview.querySelector("#albumPreviewAiIdentify").addEventListener("click", async () => {
+    const file = previewFiles[previewIndex];
+    const existing = callbacks.getAiAnalysis?.(file);
+    if (existing) {
+      setAiSheetOpen(true);
+      return;
+    }
+    const button = preview.querySelector("#albumPreviewAiIdentify");
+    if (button.disabled) return;
+    previewAnalyzing = true;
+    button.disabled = true;
+    button.classList.add("is-busy");
+    button.querySelector(".album-preview-ai-identify-label").textContent = t("ai-identifying-image");
+    const ownsProgress = !isAiAnalysisProgressActive();
+    let completed = false;
+    if (ownsProgress) startAiAnalysisProgress({ total: 1 });
+    try {
+      const { ensureAiImageAnalysisResult } = await import("./aiOrganizer.js");
+      const result = await ensureAiImageAnalysisResult(file);
+      if (ownsProgress) {
+        finishAiAnalysisProgress("complete", { count: 1, total: 1 });
+      }
+      completed = true;
+      showToast(t(result.cached ? "ai-single-image-reused" : "ai-single-image-complete"));
+    } catch (error) {
+      if (ownsProgress) {
+        finishAiAnalysisProgress("failed", {
+          count: 0,
+          total: 1,
+          detail: String(error?.message || error),
+        });
+      }
+      showToast(`${t("ai-analysis-failed")}：${String(error?.message || error)}`);
+    } finally {
+      previewAnalyzing = false;
+      button.disabled = false;
+      button.classList.remove("is-busy");
+      if (!document.getElementById("albumMobilePreview")?.classList.contains("hidden")) {
+        renderPreview();
+        if (completed) setAiSheetOpen(true);
+      }
+    }
+  });
   const handle = preview.querySelector(".album-preview-ai-sheet-handle");
   let handleDrag = null;
   handle.addEventListener("touchstart", event => {
@@ -171,26 +221,68 @@ export function initMobileInspiration(options) {
     handleDrag = null;
   }, { passive: true });
   let previewSwipe = null;
-  preview.addEventListener("touchstart", event => {
-    if (event.touches.length !== 1) {
+  const imageArea = preview.querySelector(".album-preview-image");
+  imageArea.addEventListener("touchstart", event => {
+    if (previewAnalyzing || event.touches.length !== 1 || !preview.querySelector("#albumPreviewAiSheet").classList.contains("hidden")) {
       previewSwipe = null;
       return;
     }
-    previewSwipe = { x: event.touches[0].clientX, y: event.touches[0].clientY };
+    const image = imageArea.querySelector("img");
+    image.style.transition = "none";
+    previewSwipe = {
+      x: event.touches[0].clientX,
+      y: event.touches[0].clientY,
+      image,
+      horizontal: false,
+    };
   }, { passive: true });
-  preview.addEventListener("touchend", event => {
+  imageArea.addEventListener("touchmove", event => {
+    if (!previewSwipe || event.touches.length !== 1) return;
+    const dx = event.touches[0].clientX - previewSwipe.x;
+    const dy = event.touches[0].clientY - previewSwipe.y;
+    if (!previewSwipe.horizontal && Math.abs(dx) > 8 && Math.abs(dx) > Math.abs(dy) * 1.15) {
+      previewSwipe.horizontal = true;
+    }
+    if (!previewSwipe.horizontal) return;
+    event.preventDefault();
+    const atStart = previewIndex === 0 && dx > 0;
+    const atEnd = previewIndex === previewFiles.length - 1 && dx < 0;
+    const movement = atStart || atEnd ? dx * 0.22 : dx;
+    previewSwipe.image.style.transform = `translateX(${movement}px) scale(${1 - Math.min(0.04, Math.abs(movement) / 5000)})`;
+    previewSwipe.image.style.opacity = String(1 - Math.min(0.22, Math.abs(movement) / 1200));
+  }, { passive: false });
+  imageArea.addEventListener("touchend", event => {
     if (!previewSwipe || !event.changedTouches?.length) return;
     const dx = event.changedTouches[0].clientX - previewSwipe.x;
     const dy = event.changedTouches[0].clientY - previewSwipe.y;
+    const swipe = previewSwipe;
     previewSwipe = null;
-    if (Math.abs(dy) < 42 || Math.abs(dy) < Math.abs(dx)) return;
-    if (dy < 0) setAiSheetOpen(true);
+    if (!swipe.horizontal) {
+      swipe.image.style.transition = "";
+      swipe.image.style.transform = "";
+      swipe.image.style.opacity = "";
+      if (dy < -42 && Math.abs(dy) > Math.abs(dx)) setAiSheetOpen(true);
+      return;
+    }
+    if (Math.abs(dx) >= 54) {
+      changePreview(dx < 0 ? 1 : -1, { dragDistance: dx });
+    } else {
+      swipe.image.style.transition = "transform 240ms cubic-bezier(0.32, 0.72, 0, 1), opacity 180ms ease";
+      swipe.image.style.transform = "";
+      swipe.image.style.opacity = "";
+    }
+  }, { passive: true });
+  imageArea.addEventListener("touchcancel", () => {
+    if (!previewSwipe) return;
+    previewSwipe.image.style.transition = "transform 220ms ease";
+    previewSwipe.image.style.transform = "";
+    previewSwipe.image.style.opacity = "";
+    previewSwipe = null;
   }, { passive: true });
   document.addEventListener("keydown", event => {
     if (event.key === "Escape" && (closeDialog(preview.id) || closeDialog(menu.id))) event.preventDefault();
     if (!preview.classList.contains("hidden") && ["ArrowLeft", "ArrowRight"].includes(event.key)) {
-      previewIndex = Math.max(0, Math.min(previewFiles.length - 1, previewIndex + (event.key === "ArrowLeft" ? -1 : 1)));
-      renderPreview();
+      changePreview(event.key === "ArrowLeft" ? -1 : 1);
     }
     if (event.key === "Tab") {
       const dialog = [preview, menu].find(element => !element.classList.contains("hidden"));
@@ -383,13 +475,56 @@ function previewAiHtml(analysis) {
     <p class="ai-results-note">${escapeMarkup(t("ai-result-note"))}</p>`;
 }
 
-function renderPreview() {
+function changePreview(delta, { dragDistance = 0 } = {}) {
+  const preview = document.getElementById("albumMobilePreview");
+  if (!preview || previewTransitioning || previewAnalyzing) return;
+  const nextIndex = Math.max(0, Math.min(previewFiles.length - 1, previewIndex + delta));
+  if (nextIndex === previewIndex) {
+    const image = preview.querySelector(".album-preview-image img");
+    image.style.transition = "transform 240ms cubic-bezier(0.32, 0.72, 0, 1), opacity 180ms ease";
+    image.style.transform = "";
+    image.style.opacity = "";
+    return;
+  }
+  previewTransitioning = true;
+  const image = preview.querySelector(".album-preview-image img");
+  const direction = Math.sign(delta);
+  const exitDistance = dragDistance
+    ? direction * Math.max(90, Math.abs(dragDistance) * 1.25)
+    : direction * Math.max(90, preview.clientWidth * 0.24);
+  image.style.transition = "transform 160ms cubic-bezier(0.32, 0.72, 0, 1), opacity 130ms ease";
+  image.style.transform = `translateX(${exitDistance}px) scale(0.98)`;
+  image.style.opacity = "0.18";
+  setTimeout(() => {
+    previewIndex = nextIndex;
+    previewTransitioning = false;
+    renderPreview({ enterFrom: direction > 0 ? 16 : -16 });
+  }, 145);
+}
+
+function renderPreview({ enterFrom = 0 } = {}) {
   const preview = document.getElementById("albumMobilePreview");
   const oldImage = preview.querySelector("img");
   // A fresh image prevents a slower previous file read from replacing the current photo.
   const image = document.createElement("img");
   image.alt = previewFiles[previewIndex].title || previewGroup.item.title || t("album-preview");
+  if (enterFrom) {
+    image.style.transition = "none";
+    image.style.opacity = "0.42";
+    image.style.transform = `translateX(${enterFrom}%) scale(0.985)`;
+  }
   oldImage.replaceWith(image);
+  if (enterFrom) {
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      image.style.transition = "transform 260ms cubic-bezier(0.32, 0.72, 0, 1), opacity 190ms ease";
+      image.style.opacity = "";
+      image.style.transform = "";
+    }));
+  } else {
+    image.style.transition = "";
+    image.style.opacity = "";
+    image.style.transform = "";
+  }
   callbacks.loadImage(image, previewFiles[previewIndex], previewGroup.item);
   preview.querySelector("#albumPreviewCount").textContent = `${previewIndex + 1} / ${previewFiles.length}`;
   preview.querySelector('[data-photo-step="-1"]').disabled = previewIndex === 0;
@@ -399,6 +534,11 @@ function renderPreview() {
   const toggle = preview.querySelector("#albumPreviewAiToggle");
   const sheet = preview.querySelector("#albumPreviewAiSheet");
   const body = sheet.querySelector(".album-preview-ai-sheet-body");
+  const identify = preview.querySelector("#albumPreviewAiIdentify");
+  identify.disabled = false;
+  identify.classList.remove("is-busy");
+  identify.querySelector(".album-preview-ai-identify-label").textContent =
+    t(analysis ? "ai-view-image-analysis" : "ai-identify-image");
   toggle.classList.toggle("hidden", !analysis);
   toggle.setAttribute("aria-expanded", "false");
   sheet.classList.add("hidden");

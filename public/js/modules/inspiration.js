@@ -1556,6 +1556,18 @@ export async function deleteInspirationSource(groupOrKey) {
     if (path && !referencedPaths.has(path)) files.set(path, file);
   }
 
+  let plannerRemoved = { imagesRemoved: 0, groupsRemoved: 0 };
+  try {
+    const planner = await import("./planner.js");
+    plannerRemoved = planner.removePlannerContentForAlbumSource({
+      albumId: activeAlbumId,
+      sourceUrl: removed[0]?.sourceUrl || removed[0]?.url || "",
+      fileKeys: [...files.values()].flatMap(fileAliases),
+    });
+  } catch (error) {
+    console.warn("Could not remove deleted source from Planner:", error);
+  }
+
   const nextHistory = historyList.filter(item => sourceKey(item) !== groupKey);
   const nextFavorites = favoriteList.filter(item => sourceKey(item) !== groupKey);
   if (typeof window.safeSetMoriHistory === "function") window.safeSetMoriHistory(nextHistory);
@@ -1581,9 +1593,9 @@ export async function deleteInspirationSource(groupOrKey) {
 
   renderInspiration();
   window.dispatchEvent(new CustomEvent("mori_source_deleted", {
-    detail: { key: groupKey, removedSources: removed.length, deleted, failed },
+    detail: { key: groupKey, removedSources: removed.length, deleted, failed, plannerRemoved },
   }));
-  return { removedSources: removed.length, deleted, failed };
+  return { removedSources: removed.length, deleted, failed, plannerRemoved };
 }
 
 async function openSourceActions(group) {
