@@ -3,6 +3,11 @@ import { showToast } from "../utils/index.js";
 import { showConfirm } from "./modals.js";
 import { getAiAnalysisForFile } from "./inspiration.js";
 import { ensureAiImageAnalysis } from "./aiOrganizer.js";
+import {
+  finishAiAnalysisProgress,
+  startAiAnalysisProgress,
+  updateAiAnalysisProgress,
+} from "./aiProgress.js";
 import { applyAiPlannerPlan, ensureEditablePlannerCopy, getPlannerAiImages } from "./planner.js";
 
 let running = false;
@@ -45,17 +50,26 @@ async function runAiPlannerLayout() {
   }
   running = true;
   setBusy(true, t("ai-planner-working"));
+  const limit = Math.min(images.length, 40);
+  let analyzedCount = 0;
+  let progressFinished = false;
+  startAiAnalysisProgress({ total: limit });
   try {
     const groups = new Map();
     let analyzed = 0;
     let reused = 0;
-    const limit = Math.min(images.length, 40);
     for (const [index, image] of images.slice(0, limit).entries()) {
       setBusy(true, t("ai-planner-progress", { current: index + 1, total: limit }));
+      updateAiAnalysisProgress({
+        current: index + 1,
+        total: limit,
+        fileName: image.title || image.name || image.id || `#${index + 1}`,
+      });
       const cached = getAiAnalysisForFile(image);
       const analysis = cached || await ensureAiImageAnalysis(image);
       if (cached) reused += 1;
       else analyzed += 1;
+      analyzedCount = index + 1;
       const code = analysis.pose || "other";
       const bucket = groups.get(code) || {
         code,
@@ -66,6 +80,7 @@ async function runAiPlannerLayout() {
       groups.set(code, bucket);
     }
     const plan = [...groups.values()].sort((a, b) => b.nodeIds.length - a.nodeIds.length);
+    progressFinished = finishAiAnalysisProgress("complete", { count: analyzedCount, total: limit });
     const rows = plan.map(group =>
       `<li><strong>${String(group.title).replace(/[&<>"']/g, char => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[char]))}</strong> · ${group.nodeIds.length}</li>`,
     ).join("");
@@ -80,9 +95,18 @@ async function runAiPlannerLayout() {
       }
     }, () => setBusy(false, ""));
   } catch (error) {
+    if (!progressFinished) {
+      progressFinished = finishAiAnalysisProgress("failed", {
+        count: analyzedCount,
+        total: limit,
+        detail: String(error?.message || error),
+      });
+    }
     const message = `${t("ai-planner-failed")}：${String(error?.message || error)}`;
     setBusy(false, message);
     showToast(message);
+  } finally {
+    if (!progressFinished) finishAiAnalysisProgress("failed", { count: analyzedCount, total: limit });
   }
 }
 

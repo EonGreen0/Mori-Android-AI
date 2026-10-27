@@ -473,6 +473,18 @@ public class MainActivity extends BridgeActivity {
         }
 
         @JavascriptInterface
+        public boolean aiAnalysisProgressUpdate(String payload) {
+            try {
+                if (payload == null || payload.length() > 4096) return false;
+                AiAnalysisForegroundService.dispatch(MainActivity.this, payload);
+                return true;
+            } catch (Throwable error) {
+                Log.w("MoriAiProgress", "Unable to update AI progress: " + error.getMessage());
+                return false;
+            }
+        }
+
+        @JavascriptInterface
         public boolean aiCredentialStore(String apiKey, String baseUrl) {
             try {
                 storeAiApiKey(apiKey, baseUrl);

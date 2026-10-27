@@ -7,7 +7,7 @@
 
 > This is an unofficial derivative. The Android AI edition is developed by [EonGreen0](https://github.com/EonGreen0) and is not affiliated with the upstream author.
 
-当前版本：**4.9.4**
+当前版本：**4.9.5**
 
 ## 功能
 
@@ -40,6 +40,10 @@
 AI 分类保留在用户原有相册内部。例如“花海拍摄”仍是主相册，姿势分类以筛选标签显示，不会生成一堆割裂的顶层相册。
 
 <p align="center">
+  <img src="docs/images/ai-progress-island.png" width="42%" alt="AI 识图顶部实时进度">
+</p>
+
+<p align="center">
   <img src="docs/images/ai-album-categories.png" width="31%" alt="相册内 AI 姿势分类">
   <img src="docs/images/ai-analysis-sheet.png" width="31%" alt="逐图上滑 AI 分析">
   <img src="docs/images/ai-planner.png" width="31%" alt="Android AI 策划">
@@ -54,6 +58,7 @@ AI 分类保留在用户原有相册内部。例如“花海拍摄”仍是主�
 - AI 策划会复用已有图片分析，按姿势创建分组框并执行三列画布排版。
 - AI 排版保留用户文字和备注；再次执行只替换之前的 AI 分组框。
 - 在只读云端策划上执行 AI 策划时，会先创建可编辑的本地副本并明确提示。
+- AI 逐张分析期间会显示持续进度通知；Android 16 和支持实时通知的设备可在顶部显示当前张数、总数和文件名。OPPO 等厂商是否提升为流体云样式由系统控制。
 
 ### 同步
 
@@ -115,7 +120,7 @@ npm run build:android
 Debug APK 输出：
 
 ```text
-android/app/build/outputs/apk/debug/Mori v4.9.4.apk
+android/app/build/outputs/apk/debug/Mori v4.9.5.apk
 ```
 
 Release 构建需要在项目外配置：

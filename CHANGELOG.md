@@ -1,5 +1,12 @@
 # Changelog
 
+## 4.9.5 — 2026-10-27
+
+- Show live AI image-analysis progress in an Android foreground notification.
+- Use Android 16 progress-centric notifications and short critical text on supported devices, with an ongoing notification fallback on older Android and OEM launchers.
+- Include the current image number, total image count and filename while album or Planner analysis runs.
+- Show localized preparing, cancelling, complete, cancelled and failed states with Simplified Chinese, Traditional Chinese and English output.
+
 ## 4.9.4 — 2026-10-23
 
 - Add long-press album management with rename, merge and delete.

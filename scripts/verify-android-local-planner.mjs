@@ -55,6 +55,11 @@ try {
     };
     window.MoriMainBridge = {
       aiCredentialAvailable: () => true,
+      aiAnalysisProgressUpdate: payload => {
+        window.__plannerProgressCalls = window.__plannerProgressCalls || [];
+        window.__plannerProgressCalls.push(JSON.parse(payload));
+        return true;
+      },
       aiRequestAsync: (json, reqId) => {
         const options = JSON.parse(json);
         const content = JSON.stringify({
@@ -150,6 +155,11 @@ try {
   assert.ok(boards.some(board => board.readOnly === false && board.nodes.some(node => node.type === "text")));
   await page.locator("#plannerMobileAiLayoutBtn").click();
   await page.waitForFunction(() => !document.getElementById("confirmOverlay").classList.contains("hidden"));
+  const progressCalls = await page.evaluate(() => window.__plannerProgressCalls || []);
+  assert.equal(progressCalls[0]?.action, "start");
+  assert.equal(progressCalls[0]?.total, 1);
+  assert.ok(progressCalls.some(call => call.action === "update" && call.current === 1));
+  assert.ok(progressCalls.some(call => call.action === "finish" && call.state === "complete"));
   assert.match(await page.locator("#confirmMessage").innerText(), /站姿/);
   await page.locator("#okConfirmBtn").click();
   assert.ok((await page.locator(".planner-node-group").count()) >= 1);
@@ -172,7 +182,7 @@ try {
   assert.notEqual(copiedPlan.projectId, "cloud-readonly-plan");
   assert.equal(copiedPlan.readOnly, false, "AI planning must create an editable copy from a read-only plan");
   assert.deepEqual(errors, []);
-  console.log("PASS: mobile plan zoom controls, editable local planning, AI image analysis and executable pose-group layout");
+  console.log("PASS: mobile plan zoom controls, editable local planning, live AI image progress and executable pose-group layout");
   await context.close();
 } finally {
   await browser.close();

@@ -36,6 +36,7 @@ try {
     localStorage.setItem("mori_ai_model", "vision-test");
     localStorage.setItem("mori_ai_language", "zh-Hant");
     window.__aiCalls = [];
+    window.__aiProgressCalls = [];
     window.Capacitor = {
       getPlatform: () => "android",
       isNativePlatform: () => true,
@@ -50,6 +51,10 @@ try {
     };
     window.MoriMainBridge = {
       aiCredentialAvailable: () => true,
+      aiAnalysisProgressUpdate: payload => {
+        window.__aiProgressCalls.push(JSON.parse(payload));
+        return true;
+      },
       aiCredentialStore: (value, origin) => {
         window.__storedAiKey = value;
         window.__storedAiOrigin = origin;
@@ -68,7 +73,7 @@ try {
             status: 200,
             data: JSON.stringify({ choices: [{ message: { content: "{\"ok\":true}" } }] }),
           });
-          setTimeout(() => window.__moriAiCallbacks?.[reqId]?.(response), 0);
+          setTimeout(() => window.__moriAiCallbacks?.[reqId]?.(response), Number(window.__qaAiResponseDelay) || 0);
           return;
         }
         const index = window.__aiCalls.length;
@@ -98,7 +103,7 @@ try {
           status: 200,
           data: JSON.stringify({ choices: [{ message: { content } }] }),
         });
-        setTimeout(() => window.__moriAiCallbacks?.[reqId]?.(response), 0);
+        setTimeout(() => window.__moriAiCallbacks?.[reqId]?.(response), Number(window.__qaAiResponseDelay) || 0);
       },
     };
   });
@@ -144,8 +149,24 @@ try {
 
   await page.evaluate(() => [...document.querySelectorAll(".inspiration-album-tab")]
     .find(button => button.textContent === "來源相冊")?.click());
+  if (process.env.MORI_QA_DIR) await page.evaluate(() => { window.__qaAiResponseDelay = 350; });
   await page.evaluate(() => { window.runAiAlbumOrganization(); });
+  if (process.env.MORI_QA_DIR) {
+    mkdirSync(process.env.MORI_QA_DIR, { recursive: true });
+    await page.waitForFunction(() =>
+      document.querySelector("#aiAnalysisIsland")?.innerText.includes("1/2"));
+    await page.screenshot({ path: path.join(process.env.MORI_QA_DIR, "ai-progress-running.png"), fullPage: false });
+  }
   await page.waitForFunction(() => document.getElementById("aiResultOverlay"));
+  assert.equal(await page.locator("#aiAnalysisIsland").isVisible(), true);
+  assert.match(await page.locator("#aiAnalysisIsland").innerText(), /已完成 2\/2 张图片/);
+  const progressCalls = await page.evaluate(() => window.__aiProgressCalls);
+  assert.equal(progressCalls[0].action, "start");
+  assert.equal(progressCalls[0].total, 2);
+  assert.ok(progressCalls.some(call =>
+    call.action === "update" && call.current === 1 && call.total === 2 && /1\/2/.test(call.text)));
+  assert.ok(progressCalls.some(call =>
+    call.action === "finish" && call.state === "complete" && call.current === 2));
   assert.equal(await page.locator(".ai-result-card").count(), 2);
   const resultText = await page.locator("#aiResultOverlay").innerText();
   assert.match(resultText, /建议拍摄参数/);
@@ -247,7 +268,7 @@ try {
   assert.equal(await page.evaluate(() => window.__aiCalls.at(-1).imageDataUrls.length), 0);
   assert.equal(await page.locator('[data-value="zh-Hant"]').count(), 1);
   assert.deepEqual(errors, []);
-  console.log("PASS: AI pose taxonomy, camera suggestions, detailed result feedback, in-album pose filters, per-image swipe-up analysis, cache, Keystore settings and connection test");
+  console.log("PASS: AI pose taxonomy, camera suggestions, detailed result feedback, in-album pose filters, per-image swipe-up analysis, live image progress, cache, Keystore settings and connection test");
   await context.close();
 } finally {
   await browser.close();

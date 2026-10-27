@@ -4,6 +4,12 @@ import { preparePlannerImageAsset } from "../sync/assetCatalog.js";
 import { requestAiJson, getAiBridge, aiCredentialAvailable, readAiConfig } from "./aiClient.js";
 import { analysisKey, getAiAnalysis, putAiAnalysis, putAiFileAnalysis } from "./aiStore.js";
 import {
+  finishAiAnalysisProgress,
+  requestAiAnalysisProgressCancel,
+  startAiAnalysisProgress,
+  updateAiAnalysisProgress,
+} from "./aiProgress.js";
+import {
   getActiveInspirationAlbumSnapshot,
   refreshAiFileAnalyses,
   renderInspiration,
@@ -343,6 +349,7 @@ export async function ensureAiImageAnalysis(file) {
 export async function runAiAlbumOrganization() {
   if (running) {
     cancelRequested = true;
+    requestAiAnalysisProgressCancel();
     status(t("ai-cancel"), "working");
     return;
   }
@@ -367,9 +374,12 @@ export async function runAiAlbumOrganization() {
   let reused = 0;
   let analyzed = 0;
   const failures = [];
+  const progressTotal = Math.min(totalAvailable, MAX_IMAGES_PER_RUN);
+  let progressFinished = false;
   cancelRequested = false;
   setRunning(true);
   status(t("ai-analyzing"), "working");
+  startAiAnalysisProgress({ total: progressTotal });
   try {
     for (const group of groups) {
       if (seen >= MAX_IMAGES_PER_RUN) break;
@@ -377,7 +387,14 @@ export async function runAiAlbumOrganization() {
       for (const file of group.files) {
         if (seen >= MAX_IMAGES_PER_RUN || cancelRequested) break;
         try {
-          const result = await analyzeFile(file, config, ++seen, Math.min(totalAvailable, MAX_IMAGES_PER_RUN));
+          const current = seen + 1;
+          seen = current;
+          updateAiAnalysisProgress({
+            current,
+            total: progressTotal,
+            fileName: file.title || group.title || `#${current}`,
+          });
+          const result = await analyzeFile(file, config, current, progressTotal);
           if (seenHashes.has(result.imageHash)) continue;
           seenHashes.add(result.imageHash);
           entries.push(result);
@@ -390,6 +407,7 @@ export async function runAiAlbumOrganization() {
       }
     }
     if (cancelRequested) {
+      progressFinished = finishAiAnalysisProgress("cancelled", { count: seen, total: progressTotal });
       status(t("ai-plan-cancelled"), "idle");
       return;
     }
@@ -412,6 +430,7 @@ export async function runAiAlbumOrganization() {
       plans.set(code, bucket);
     }
     const planList = [...plans.values()].sort((a, b) => b.imageCount - a.imageCount);
+    progressFinished = finishAiAnalysisProgress("complete", { count: seen, total: progressTotal });
     status(`${t("ai-plan-title")} · ${t("ai-analysis-summary", { newCount: analyzed, cachedCount: reused })}`, "ready");
     const accepted = await showAiResultOverlay({
       entries,
@@ -443,9 +462,17 @@ export async function runAiAlbumOrganization() {
     showToast(t("ai-analysis-saved"));
     document.getElementById("albumMobileMenu")?.classList.add("hidden");
   } catch (error) {
+    if (!progressFinished) {
+      progressFinished = finishAiAnalysisProgress("failed", {
+        count: seen,
+        total: progressTotal,
+        detail: String(error?.message || error),
+      });
+    }
     status(`${t("ai-analysis-failed")}：${String(error?.message || error)}`, "error");
     showToast(t("ai-analysis-failed"));
   } finally {
+    if (!progressFinished) finishAiAnalysisProgress("failed", { count: seen, total: progressTotal });
     setRunning(false);
   }
 }

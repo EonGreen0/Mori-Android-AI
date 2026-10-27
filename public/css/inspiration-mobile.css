@@ -161,6 +161,109 @@ html.is-android #inspirationPage[data-album-view="canvas"] .inspiration-card > i
 #albumMobileSync .inspiration-cloud-sync-heading { display: none; }
 #albumMobileSync select, #albumMobileSync button { width: 100%; border-radius: 8px; font-size: 14px; }
 #albumMobileSync .planner-sync-status { font-size: 12px; overflow-wrap: anywhere; }
+
+.ai-analysis-island {
+  position: fixed;
+  z-index: 3200;
+  top: calc(env(safe-area-inset-top, 0px) + 8px);
+  left: 50%;
+  display: flex;
+  width: min(360px, calc(100vw - 28px));
+  min-height: 54px;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 12px;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 28px;
+  background: rgba(18, 18, 22, 0.94);
+  box-shadow: 0 12px 34px rgba(0, 0, 0, 0.32);
+  color: #fff;
+  transform: translateX(-50%);
+  backdrop-filter: blur(18px);
+  -webkit-backdrop-filter: blur(18px);
+  pointer-events: none;
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.ai-analysis-island.hidden {
+  display: flex;
+  opacity: 0;
+  transform: translate(-50%, -12px) scale(0.96);
+  visibility: hidden;
+}
+
+.ai-analysis-island-icon {
+  position: relative;
+  width: 28px;
+  height: 28px;
+  flex: 0 0 28px;
+  border-radius: 50%;
+  background: conic-gradient(from 30deg, #8d7cff, #57d4ff, #ff8dc7, #8d7cff);
+  animation: ai-island-spin 2.1s linear infinite;
+}
+
+.ai-analysis-island-icon::after {
+  position: absolute;
+  inset: 4px;
+  border-radius: inherit;
+  background: #17171c;
+  content: "";
+}
+
+.ai-analysis-island-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 2px;
+}
+
+.ai-analysis-island-copy strong,
+.ai-analysis-island-copy small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.ai-analysis-island-copy strong { font-size: 13px; line-height: 16px; }
+.ai-analysis-island-copy small { color: rgba(255, 255, 255, 0.72); font-size: 11px; line-height: 14px; }
+
+.ai-analysis-island-count {
+  min-width: 42px;
+  flex: 0 0 auto;
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.12);
+  padding: 5px 8px;
+  font-size: 12px;
+  font-weight: 700;
+  text-align: center;
+}
+
+.ai-analysis-island[data-state="complete"] .ai-analysis-island-icon {
+  animation: none;
+  background: #65d69a;
+}
+
+.ai-analysis-island[data-state="failed"] .ai-analysis-island-icon {
+  animation: none;
+  background: #ff7a7a;
+}
+
+.ai-analysis-island[data-state="cancelled"] .ai-analysis-island-icon {
+  animation: none;
+  background: #ffc45c;
+}
+
+@keyframes ai-island-spin {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .ai-analysis-island,
+  .ai-analysis-island-icon {
+    animation: none;
+    transition: none;
+  }
+}
 .album-photo-preview { position: fixed; inset: 0; z-index: 2100; display: flex; flex-direction: column; padding: env(safe-area-inset-top, 0px) 0 env(safe-area-inset-bottom, 0px); background: #141416; color: #f8f8fa; }
 .album-preview-close { position: absolute; right: 14px; top: calc(10px + env(safe-area-inset-top, 0px)); z-index: 1; background: #141416; }
 .album-preview-image { flex: 1; display: grid; place-items: center; min-height: 0; width: 100%; padding: 60px 0 12px; }
