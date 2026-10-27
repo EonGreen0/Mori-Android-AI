@@ -1072,6 +1072,61 @@ public class MainActivity extends BridgeActivity {
             }
         }
 
+        @JavascriptInterface
+        public boolean deleteMediaFile(String rawPath) {
+            try {
+                if (rawPath == null || rawPath.isEmpty()) return false;
+                String cleanPath = rawPath;
+                if (cleanPath.startsWith("file://")) cleanPath = cleanPath.substring(7);
+                cleanPath = URLDecoder.decode(cleanPath, "UTF-8");
+                File file = new File(cleanPath);
+                if (!file.isAbsolute()) {
+                    File[] roots = new File[]{
+                            Environment.getExternalStorageDirectory(),
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES),
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES),
+                            Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC)
+                    };
+                    for (File root : roots) {
+                        File candidate = new File(root, cleanPath.replaceFirst("^/+", ""));
+                        if (candidate.exists()) {
+                            file = candidate;
+                            break;
+                        }
+                    }
+                }
+
+                String name = file.getName().toLowerCase();
+                android.net.Uri collection = MediaStore.Files.getContentUri("external");
+                if (name.matches(".*\\.(jpg|jpeg|png|webp|gif|avif)$")) {
+                    collection = MediaStore.Images.Media.EXTERNAL_CONTENT_URI;
+                } else if (name.matches(".*\\.(mp4|mov|m4v|webm|mkv)$")) {
+                    collection = MediaStore.Video.Media.EXTERNAL_CONTENT_URI;
+                } else if (name.matches(".*\\.(mp3|m4a|wav|flac|ogg)$")) {
+                    collection = MediaStore.Audio.Media.EXTERNAL_CONTENT_URI;
+                }
+
+                try (android.database.Cursor cursor = getContentResolver().query(
+                        collection,
+                        new String[]{MediaStore.MediaColumns._ID},
+                        MediaStore.MediaColumns.DATA + "=?",
+                        new String[]{file.getAbsolutePath()},
+                        null
+                )) {
+                    if (cursor != null && cursor.moveToFirst()) {
+                        long id = cursor.getLong(0);
+                        android.net.Uri itemUri = android.content.ContentUris.withAppendedId(collection, id);
+                        if (getContentResolver().delete(itemUri, null, null) > 0) return true;
+                    }
+                }
+                return file.exists() && file.delete();
+            } catch (Throwable error) {
+                Log.w("MoriMediaDelete", "Unable to delete media: " + error.getMessage());
+                return false;
+            }
+        }
+
         private Bitmap extractBestFrame(MediaMetadataRetriever retriever) {
             Bitmap bitmap = null;
             long timeUs = 2000000;

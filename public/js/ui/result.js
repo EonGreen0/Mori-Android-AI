@@ -20,6 +20,7 @@ import {
   setSlideData,
 } from "../modules/core.js";
 import { startNativeDownload } from "./nativeDownload.js";
+import { chooseDownloadDestination } from "./downloadDestination.js";
 import { escapeHtml } from "../ui.js";
 import { showConfirm } from "../modules/modals.js";
 import {
@@ -1100,6 +1101,9 @@ export function renderResult(result, originalUrl) {
       return;
     }
 
+    const storageMode = await chooseDownloadDestination({ scope: "batch" });
+    if (!storageMode) return;
+
     galleryBatchDownloading = true;
     galleryBatchCancelled = false;
     galleryBatchActiveButton = triggerBtn;
@@ -1143,6 +1147,7 @@ export function renderResult(result, originalUrl) {
             result.sourceUrl || originalUrl,
             false,
             entry.item.fallbackUrls || [],
+            { storageMode },
           );
         } catch (err) {
           console.error("Gallery batch download error:", err);
@@ -1416,6 +1421,14 @@ export function renderResult(result, originalUrl) {
           return;
         }
 
+        const hasImageDownloads = result.downloads.some(item =>
+          /image|photo|jpg|jpeg|png|webp|gif|avif/i.test(item?.type || "") ||
+          /\.(?:jpg|jpeg|png|webp|gif|avif)(?:$|[?#])/i.test(item?.url || ""));
+        const playlistStorageMode = hasImageDownloads
+          ? await chooseDownloadDestination({ scope: "batch" })
+          : null;
+        if (hasImageDownloads && !playlistStorageMode) return;
+
         isDownloadingAll = true;
         playlistCancelled = false;
         window._moriDownloadCancelled = false;
@@ -1501,6 +1514,7 @@ export function renderResult(result, originalUrl) {
                 result.sourceUrl || originalUrl,
                 false, // don't reset cancel flag between tracks
                 item.fallbackUrls || [],
+                { storageMode: playlistStorageMode },
               );
             } catch (err) {
               console.error("Batch download track error:", err);

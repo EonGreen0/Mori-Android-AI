@@ -88,9 +88,13 @@ async function readLocalImageBytes(file) {
       return new Uint8Array(await response.arrayBuffer());
     }
     const relative = !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(path);
-    const options = relative
-      ? PUBLIC_DIRECTORIES.map(directory => ({ path, directory }))
-      : [{ path }];
+    const declaredDirectory = file?.directory ||
+      (file?.storage === "cache" || file?.cachedImage ? "DATA" : "");
+    const options = declaredDirectory
+      ? [{ path, directory: declaredDirectory }]
+      : relative
+        ? PUBLIC_DIRECTORIES.map(directory => ({ path, directory }))
+        : [{ path }];
     for (const option of options) {
       try {
         const result = await Filesystem.readFile(option);

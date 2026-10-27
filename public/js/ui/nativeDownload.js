@@ -23,6 +23,7 @@ import { cleanDownloadUrl, buildDownloadHeaders } from "../downloader/headers.js
 import { needsAsyncResolving, resolveDownloadUrl } from "../downloader/resolver.js";
 import { saveToStorage } from "../downloader/storage.js";
 import { handlePostDownload } from "../downloader/postProcess.js";
+import { chooseDownloadDestination, DOWNLOAD_STORAGE_MODES } from "./downloadDestination.js";
 
 export function cancelCurrentDownload() {
   window._moriDownloadCancelled = true;
@@ -55,6 +56,7 @@ export async function startNativeDownload(
   sourceUrl,
   resetCancelFlag = true,
   fallbackUrls = [],
+  options = {},
 ) {
   if (!url || typeof url !== "string" || !url.trim()) {
     showToast(
@@ -103,6 +105,16 @@ export async function startNativeDownload(
     return { success: false, error: "Cancelled" };
   }
 
+  const isImageDownload =
+    /image|photo|jpg|jpeg|png|webp|gif|avif/i.test(String(type || "")) ||
+    /\.(?:jpg|jpeg|png|webp|gif|avif)(?:$|[?#])/i.test(String(url || ""));
+  let storageMode = options?.storageMode;
+  if (isImageDownload && !Object.values(DOWNLOAD_STORAGE_MODES).includes(storageMode)) {
+    storageMode = await chooseDownloadDestination({ scope: options?.scope || "single" });
+    if (!storageMode) return { success: false, cancelled: true, error: "Cancelled" };
+  }
+  const cachedImage = isImageDownload && storageMode === DOWNLOAD_STORAGE_MODES.CACHE;
+
   window._moriActiveDownloadUrl = sourceUrl || url;
   window.dispatchEvent(
     new CustomEvent("mori_download_started", {
@@ -114,7 +126,7 @@ export async function startNativeDownload(
   const progressContainer = document.getElementById("progressContainer");
   const originalContent = btn ? btn.innerHTML : "";
 
-  if (window.Capacitor?.getPlatform?.() === "android") {
+  if (window.Capacitor?.getPlatform?.() === "android" && !cachedImage) {
     try {
       const status = await Filesystem.checkPermissions();
       if (status.publicStorage !== "granted") {
@@ -281,15 +293,22 @@ export async function startNativeDownload(
       quickVisualFolder || localStorage.getItem("mori_download_path") || "Mori";
     const musicSubfolder =
       localStorage.getItem("mori_music_path") || "Mori/Music";
-    const targetFolder = isAudio ? musicSubfolder : videoSubfolder;
-    let fullPath = isAudio
-      ? `Download/${musicSubfolder}`
-      : `Download/${videoSubfolder}`;
+    const targetFolder = cachedImage
+      ? t("download-saved-cache-path")
+      : isAudio
+        ? musicSubfolder
+        : videoSubfolder;
+    let fullPath = cachedImage
+      ? "Mori/Library/Images"
+      : isAudio
+        ? `Download/${musicSubfolder}`
+        : `Download/${videoSubfolder}`;
 
     // A quick destination is an explicit user choice for this result, so do not
     // silently append an automatic platform subfolder beneath it.
     const hasQuickVisualFolder = !isAudio && Boolean(quickVisualFolder);
     if (
+      !cachedImage &&
       !hasQuickVisualFolder &&
       localStorage.getItem("mori_auto_folder") !== "false"
     ) {
@@ -297,7 +316,9 @@ export async function startNativeDownload(
       fullPath = `${fullPath}/${platformFolder}`;
     }
 
-    const directoriesToTry = ["EXTERNAL_STORAGE", "DOCUMENTS", "EXTERNAL"];
+    const directoriesToTry = cachedImage
+      ? ["DATA"]
+      : ["EXTERNAL_STORAGE", "DOCUMENTS", "EXTERNAL"];
 
     if (Filesystem) {
       for (const dir of directoriesToTry) {
@@ -411,6 +432,8 @@ export async function startNativeDownload(
       btn,
       originalContent,
       progressContainer,
+      storageMode: cachedImage ? DOWNLOAD_STORAGE_MODES.CACHE : DOWNLOAD_STORAGE_MODES.GALLERY,
+      cachedImage,
     });
   } catch (err) {
     console.error("Download failed", err);

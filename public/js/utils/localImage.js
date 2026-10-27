@@ -63,9 +63,14 @@ export async function loadAndroidLocalImage(img, source, fallback = "") {
   for (const raw of [...new Set(paths.filter(Boolean).map(String))]) {
     const path = originalLocalPath(raw);
     const relative = !/^(?:[a-z][a-z0-9+.-]*:|\/)/i.test(path);
-    const options = relative
-      ? publicDirectories.map((directory) => ({ path, directory }))
-      : [{ path }];
+    const declaredDirectory = typeof source === "object" && source
+      ? source.directory || (source.storage === "cache" || source.cachedImage ? "DATA" : "")
+      : "";
+    const options = declaredDirectory
+      ? [{ path, directory: declaredDirectory }]
+      : relative
+        ? publicDirectories.map((directory) => ({ path, directory }))
+        : [{ path }];
     for (const option of options) {
       if (!isCurrent()) return true;
       try {

@@ -1,5 +1,13 @@
 # Changelog
 
+## 4.9.6 — 2026-10-27
+
+- Let users choose whether downloaded images stay in the Mori private cache or are also written to the phone gallery.
+- Default the download choice to the Mori cache, keeping link images out of system gallery views unless explicitly requested.
+- Add an iOS-style action sheet with spring transitions and haptic feedback for download destinations and album link actions.
+- Add per-link deletion inside albums, including associated cache images, history entries, favorites and album assignments.
+- Attempt MediaStore and shared-storage deletion for gallery copies; keep the link removal and show a manual-cleanup notice when Android denies permission.
+
 ## 4.9.5 — 2026-10-27
 
 - Show live AI image-analysis progress in an Android foreground notification.

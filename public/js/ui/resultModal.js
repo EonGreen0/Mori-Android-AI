@@ -10,8 +10,16 @@ import {
 import { currentLang } from "../modules/core.js";
 import { renderMediaSlides } from "./result.js";
 
-export function getCleanDirectoryPath(item, rawFile, itemType) {
+export function getCleanDirectoryPath(item, rawFile, itemType, localFile = null) {
   let p = rawFile || "";
+  if (
+    localFile?.storage === "cache" ||
+    localFile?.cachedImage === true ||
+    /^Mori\/Library\/Images\//i.test(String(p).replace(/^\/+/, ""))
+  ) {
+    return translations[currentLang]?.["album-source-cache-label"] ||
+      "Mori private image cache";
+  }
   if (!p) {
     if (item?.localFiles && item.localFiles.length > 0) {
       const match = itemType
@@ -381,7 +389,7 @@ export async function showModal(item, onRedownload) {
           rawPath = item.localUri || item.filePath || "";
         }
 
-        const dirPath = getCleanDirectoryPath(item, rawPath, currentSlide.type);
+        const dirPath = getCleanDirectoryPath(item, rawPath, currentSlide.type, currentSlide.file);
 
         if (pathVal) {
           pathVal.textContent = dirPath;

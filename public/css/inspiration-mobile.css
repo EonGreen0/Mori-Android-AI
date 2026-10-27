@@ -125,9 +125,43 @@ html.is-android #inspirationPage[data-album-view="groups"] #inspirationViewport 
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-stage { position: relative; display: flex; flex-direction: column; transform: none !important; will-change: auto; gap: 28px; width: 100%; min-width: 0; min-height: 0; padding: 22px 18px calc(32px + env(safe-area-inset-bottom, 0px)); }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane { width: 100%; min-width: 0; flex: 0 0 auto; overflow: visible; border: 0; border-radius: 0; background: transparent; box-shadow: none; }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-header { padding: 0 0 12px; border: 0; }
+html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-copy { gap: 5px; }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-copy strong { font-size: 16px; }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-copy > span { font-size: 12px; }
+.inspiration-source-menu {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  place-items: center;
+  border: 0;
+  border-radius: 17px;
+  background: rgba(118, 118, 128, 0.12);
+  color: var(--text-primary);
+  font-size: 20px;
+  line-height: 1;
+  transition: transform 120ms ease, background-color 120ms ease;
+}
+.inspiration-source-menu:active {
+  background: rgba(118, 118, 128, 0.22);
+  transform: scale(0.92);
+}
+.inspiration-lane.is-removing {
+  animation: inspiration-source-remove 190ms cubic-bezier(0.32, 0.72, 0, 1) forwards;
+  pointer-events: none;
+}
+@keyframes inspiration-source-remove {
+  to {
+    opacity: 0;
+    transform: translateY(-8px) scale(0.97);
+  }
+}
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-stack { flex-direction: row; padding: 0; gap: 8px; overflow-x: auto; overscroll-behavior-x: contain; touch-action: pan-x pan-y; scrollbar-width: none; }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-lane-stack::-webkit-scrollbar { display: none; }
 html.is-android #inspirationPage[data-album-view="groups"] .inspiration-card { flex: 0 0 44%; width: 44%; }

@@ -303,7 +303,13 @@ window.addEventListener("mori_file_saved", async (e) => {
       matched = true;
       const localFiles = item.localFiles || [];
       const trackTitle = e.detail.title;
-      if (!localFiles.find((f) => f.path === path)) {
+      const existingFile = localFiles.find((f) => f.path === path);
+      if (existingFile) {
+        existingFile.uri = fileUri;
+        existingFile.storage = e.detail.storageMode || existingFile.storage || "gallery";
+        existingFile.directory = e.detail.directory || existingFile.directory || "";
+        existingFile.cachedImage = e.detail.cachedImage === true || existingFile.cachedImage === true;
+      } else {
         localFiles.push({
           path,
           uri: fileUri,
@@ -311,6 +317,9 @@ window.addEventListener("mori_file_saved", async (e) => {
           thumbnail: item.thumbnail || item.localThumbnail || null,
           title: trackTitle || item.title,
           savedAt: Date.now(),
+          storage: e.detail.storageMode || "gallery",
+          directory: e.detail.directory || "",
+          cachedImage: e.detail.cachedImage === true,
         });
       }
       // Preserve original playlist title & playlist thumbnail intact!

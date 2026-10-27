@@ -1,7 +1,8 @@
 // inspiration.js — zoomable visual reference board built from downloaded history
 import { t } from "../i18n/index.js";
-import { showToast, Filesystem } from "../utils/index.js";
-import { showConfirm } from "./modals.js";
+import { showToast, Filesystem, triggerHaptic } from "../utils/index.js";
+import { showConfirm, showInfoModal } from "./modals.js";
+import { showActionSheet } from "../ui/actionSheet.js";
 import { cleanUrl } from "../utils/urlUtils.js";
 import { loadAndroidLocalImage } from "../utils/localImage.js";
 import { getImportedAlbumLibraries } from "../sync/albumLibrary.js";
@@ -1475,6 +1476,166 @@ function removeGroupFromAlbum(groupKey, albumId) {
   saveAssignments(assignments);
 }
 
+function normalizedFilePath(file) {
+  const value = String(file?.path || file?.uri || "").trim();
+  if (!value || /^(?:https?:|data:|blob:)/i.test(value)) return "";
+  try {
+    return decodeURIComponent(value.replace(/^file:\/\//i, "")).replace(/\\/g, "/");
+  } catch (_) {
+    return value.replace(/^file:\/\//i, "").replace(/\\/g, "/");
+  }
+}
+
+function fileAliases(file) {
+  return [file?.path, file?.uri]
+    .map(value => normalizedFilePath({ path: value }))
+    .filter(Boolean);
+}
+
+function cacheFile(file) {
+  const path = normalizedFilePath(file);
+  return file?.cachedImage === true ||
+    file?.storage === "cache" ||
+    file?.directory === "DATA" ||
+    /^Mori\/Library\/Images\//i.test(path);
+}
+
+async function deleteSourceFile(file) {
+  const path = normalizedFilePath(file);
+  if (!path) return true;
+  if (path.startsWith("content:")) throw new Error("content_uri_not_owned");
+
+  if (cacheFile(file)) {
+    await Filesystem.deleteFile({
+      path,
+      directory: file?.directory || "DATA",
+    });
+    return true;
+  }
+
+  if (window.MoriMainBridge?.deleteMediaFile) {
+    try {
+      if (window.MoriMainBridge.deleteMediaFile(path) === true) return true;
+    } catch (_) {}
+  }
+
+  let lastError = null;
+  for (const directory of ["EXTERNAL_STORAGE", "DOCUMENTS", "EXTERNAL"]) {
+    try {
+      await Filesystem.deleteFile({ path, directory });
+      return true;
+    } catch (error) {
+      lastError = error;
+    }
+  }
+  throw lastError || new Error("file_delete_failed");
+}
+
+export async function deleteInspirationSource(groupOrKey) {
+  const groupKey = typeof groupOrKey === "string" ? groupOrKey : groupOrKey?.key;
+  if (!groupKey) return { removedSources: 0, deleted: 0, failed: 0 };
+
+  const history = safeJson("mori_history", []);
+  const favoriteRefs = safeJson(FAVORITE_REFS_KEY, []);
+  const historyList = Array.isArray(history) ? history : [];
+  const favoriteList = Array.isArray(favoriteRefs) ? favoriteRefs : [];
+  const removedHistory = historyList.filter(item => sourceKey(item) === groupKey);
+  const removedFavorites = favoriteList.filter(item => sourceKey(item) === groupKey);
+  const removed = [...removedHistory, ...removedFavorites];
+  if (!removed.length) return { removedSources: 0, deleted: 0, failed: 0 };
+
+  const remaining = [
+    ...historyList.filter(item => sourceKey(item) !== groupKey),
+    ...favoriteList.filter(item => sourceKey(item) !== groupKey),
+  ];
+  const referencedPaths = new Set(remaining.flatMap(item =>
+    (item.localFiles || []).flatMap(fileAliases)));
+  const files = new Map();
+  for (const file of removed.flatMap(item => item.localFiles || [])) {
+    const path = normalizedFilePath(file);
+    if (path && !referencedPaths.has(path)) files.set(path, file);
+  }
+
+  const nextHistory = historyList.filter(item => sourceKey(item) !== groupKey);
+  const nextFavorites = favoriteList.filter(item => sourceKey(item) !== groupKey);
+  if (typeof window.safeSetMoriHistory === "function") window.safeSetMoriHistory(nextHistory);
+  else localStorage.setItem("mori_history", JSON.stringify(nextHistory));
+  localStorage.setItem(FAVORITE_REFS_KEY, JSON.stringify(nextFavorites));
+
+  const assignments = loadAssignments();
+  delete assignments[groupKey];
+  for (const file of files.values()) delete assignments[fileAssignmentKey(file)];
+  saveAssignments(assignments);
+
+  let deleted = 0;
+  let failed = 0;
+  for (const file of files.values()) {
+    try {
+      await deleteSourceFile(file);
+      deleted += 1;
+    } catch (error) {
+      console.warn("Could not delete source image:", error);
+      failed += 1;
+    }
+  }
+
+  renderInspiration();
+  window.dispatchEvent(new CustomEvent("mori_source_deleted", {
+    detail: { key: groupKey, removedSources: removed.length, deleted, failed },
+  }));
+  return { removedSources: removed.length, deleted, failed };
+}
+
+async function openSourceActions(group) {
+  const sourceUrl = group?.item?.sourceUrl || group?.item?.url || "";
+  if (!sourceUrl) return;
+  try { triggerHaptic?.("light"); } catch (_) {}
+  const action = await showActionSheet({
+    title: group.item.title || t("album-source-menu"),
+    message: sourceUrl,
+    options: [{
+      id: "delete-source",
+      label: t("album-source-delete"),
+      description: t("album-source-delete-desc"),
+      icon: "trash",
+      destructive: true,
+    }],
+  });
+  if (action !== "delete-source") return;
+  showConfirm(
+    t("album-source-delete-title"),
+    t("album-source-delete-confirm", {
+      title: escapeHtml(group.item.title || sourceUrl),
+      count: group.files.length,
+    }),
+    async () => {
+      try {
+        const lane = [...document.querySelectorAll(".inspiration-lane")]
+          .find(element => element.dataset.groupKey === group.key);
+        lane?.classList.add("is-removing");
+        await new Promise(resolve => setTimeout(resolve, 180));
+        const result = await deleteInspirationSource(group);
+        if (result.failed) {
+          showInfoModal(
+            t("album-source-delete-partial-title"),
+            escapeHtml(t("album-source-delete-partial", {
+              deleted: result.deleted,
+              failed: result.failed,
+            })),
+          );
+        } else {
+          showToast(t("album-source-deleted", { count: result.deleted }));
+        }
+      } catch (error) {
+        showInfoModal(
+          t("album-source-delete-partial-title"),
+          escapeHtml(String(error?.message || error)),
+        );
+      }
+    },
+  );
+}
+
 function saveTodayAsAlbum() {
   const groups = getGroups("today");
   if (!groups.length) {
@@ -1572,6 +1733,12 @@ function buildLane(group, albums) {
   lane.dataset.groupKey = group.key;
 
   const sourceUrl = group.item.sourceUrl || group.item.url || "";
+  const removableSource = Boolean(
+    sourceUrl &&
+    !group.item.syncGroupId &&
+    !group.item.localPackage &&
+    !group.item.localImportId,
+  );
   const videoFile = group.videos?.[0] || null;
   const summary = group.videoLink ? `视频链接 · ${group.frames.length} 帧` : videoFile
     ? t("inspiration-video-frame-summary", { count: group.frames?.length || 0 })
@@ -1585,7 +1752,8 @@ function buildLane(group, albums) {
         ${sourceUrl ? '<span class="album-icon" aria-hidden="true" style="--album-icon: url(\'/icons/material/open_in_new.svg\')"></span>' : ""}
       </button>
       <span>${escapeHtml(videoFile || group.videoLink ? summary : t("album-photo-count", { count: group.files.length }))}</span>
-    </div>` : `
+    </div>
+    ${removableSource ? `<button type="button" class="inspiration-source-menu" aria-label="${escapeHtml(t("album-source-menu"))}">⋯</button>` : ""}` : `
     <div class="inspiration-lane-copy">
       <strong>${escapeHtml(group.item.title || "Reference")}</strong>
       <span>${escapeHtml(summary)} · ${escapeHtml(sourceUrl)}</span>
@@ -1593,11 +1761,15 @@ function buildLane(group, albums) {
     <div class="inspiration-lane-header-actions">
       ${videoFile ? `<button type="button" class="inspiration-frame-source-btn">${escapeHtml(group.frames?.length ? t("inspiration-frame-continue") : t("inspiration-frame-select"))}</button>` : ""}
       <button type="button" class="inspiration-source-btn">${escapeHtml(t("inspiration-open-source"))}</button>
+      ${removableSource ? `<button type="button" class="inspiration-source-menu" aria-label="${escapeHtml(t("album-source-menu"))}">⋯</button>` : ""}
     </div>
   `;
   header.querySelector(".inspiration-title-link")?.addEventListener("click", () => openSource(sourceUrl));
   header.querySelector(".inspiration-source-btn")?.addEventListener("click", () =>
     openSource(sourceUrl),
+  );
+  header.querySelector(".inspiration-source-menu")?.addEventListener("click", () =>
+    openSourceActions(group),
   );
   header.querySelector(".inspiration-frame-source-btn")?.addEventListener("click", () =>
     openFramePicker(group.item, videoFile),

@@ -7,7 +7,7 @@
 
 > This is an unofficial derivative. The Android AI edition is developed by [EonGreen0](https://github.com/EonGreen0) and is not affiliated with the upstream author.
 
-当前版本：**4.9.5**
+当前版本：**4.9.6**
 
 ## 功能
 
@@ -23,8 +23,15 @@
 - 图片复制到 App 私有目录，后续可离线查看。
 - 创建相册，并把多个来源链接手动加入同一个相册。
 - 在解析结果页选择现有相册或直接新建相册。
+- 下载图片时可选“仅保存到 Mori”或“同时保存到手机相册”；默认推荐 Mori 私有缓存，避免链接素材挤占系统相册。
+- 相册内每个来源链接都有独立操作菜单，可删除链接及关联图片；系统相册副本无权限删除时，会提示手动清理。
 - 长按相册封面可重命名、合并到其他相册或删除归类；删除不会删除原图片。
 - 支持本地相册包 `.mori-album` 导入。
+
+<p align="center">
+  <img src="docs/images/download-destination-sheet.png" width="42%" alt="图片下载保存位置选择">
+  <img src="docs/images/album-link-actions.png" width="42%" alt="相册内删除单个链接和图片">
+</p>
 
 ### AI 图片分析与姿势分类
 
@@ -120,7 +127,7 @@ npm run build:android
 Debug APK 输出：
 
 ```text
-android/app/build/outputs/apk/debug/Mori v4.9.5.apk
+android/app/build/outputs/apk/debug/Mori v4.9.6.apk
 ```
 
 Release 构建需要在项目外配置：

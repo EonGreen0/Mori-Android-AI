@@ -23,6 +23,8 @@ export async function handlePostDownload({
   btn,
   originalContent,
   progressContainer,
+  storageMode = "gallery",
+  cachedImage = false,
 }) {
   triggerHaptic("success");
   if (!window._moriPlaylistDownloading) {
@@ -59,23 +61,32 @@ export async function handlePostDownload({
         path: savedFile.path,
         uri: savedUri,
         title: effectiveTitle,
+        storageMode,
+        directory: successfulDir,
+        cachedImage,
       },
     }),
   );
 
-  if (window.MoriMainBridge?.scanMediaFile) {
+  if (!cachedImage && window.MoriMainBridge?.scanMediaFile) {
     try {
       window.MoriMainBridge.scanMediaFile(savedFile.path || savedUri);
     } catch (_) {}
   }
 
-  const completeTitle =
-    translations[currentLang]?.["toast-download-complete"] ||
-    "Download Complete";
+  const completeTitle = cachedImage
+    ? translations[currentLang]?.["download-saved-cache"] ||
+      "Saved to the Mori image cache"
+    : translations[currentLang]?.["toast-download-complete"] ||
+      "Download Complete";
+  const completePath = cachedImage
+    ? translations[currentLang]?.["download-saved-cache-path"] ||
+      "Mori private image cache"
+    : `/Download/${targetFolder}`;
   const dismissMs = window._moriPlaylistDownloading ? 1200 : 3000;
   completeDownloadProgressToast(
     completeTitle,
-    `/Download/${targetFolder}`,
+    completePath,
     dismissMs,
   );
 
@@ -86,7 +97,7 @@ export async function handlePostDownload({
     try {
       window.MoriMainBridge.showCompleteNotification(
         effectiveTitle,
-        `/Download/${targetFolder}/${fileName}`,
+        cachedImage ? completePath : `/Download/${targetFolder}/${fileName}`,
       );
     } catch (_) {}
   }
@@ -112,5 +123,6 @@ export async function handlePostDownload({
     path: savedFile.path,
     uri: savedUri,
     title: effectiveTitle,
+    storageMode,
   };
 }

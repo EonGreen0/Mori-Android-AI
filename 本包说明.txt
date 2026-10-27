@@ -1,6 +1,6 @@
-Mori 朋友体验版源码，2026-10-27。Windows 4.9.5 / Android 4.9.5。Android AI 版本开发者：EonGreen0。
+Mori 朋友体验版源码，2026-10-27。Windows 4.9.6 / Android 4.9.6。Android AI 版本开发者：EonGreen0。
 基于当前未提交工作区打包，不代表上游仓库最新发布。
-Android 4.9.5 新增 AI 识图实时进度通知：支持 Android 16 顶部进度胶囊，并在 OPPO 等设备上提供持续通知兼容。
+Android 4.9.6 新增图片下载位置选择、Mori 私有图片缓存，以及相册内单链接删除和关联图片清理。
 依赖安装：npm ci。Windows：npm run tauri:build -- --bundles nsis。Android调试：npm run build:android。
 Android正式签名需自己的签名配置；原签名私钥不随包提供。
 参考 docs/EXTERNAL_DEPENDENCIES.md：scrapers.bin/libmorisec 使用现存预编译文件，私有源码不可获得。

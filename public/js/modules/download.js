@@ -17,6 +17,7 @@ import { cancelCurrentDownload } from "../ui/nativeDownload.js";
 import { showConfirm, hideConfirm } from "./modals.js";
 import { saveToHistory, safeSetHistory } from "./history.js";
 import { extractBatchUrls, analyzeUrlSilent } from "./batchManager.js";
+import { chooseDownloadDestination } from "../ui/downloadDestination.js";
 import {
   setTikTokSource,
   scrapeTikTok,
@@ -246,8 +247,19 @@ downloadBtn.addEventListener("click", async () => {
         batchDownloadAllBtn.textContent = `${dlAllText} (${batchResults.length})`;
         batchDownloadAllBtn.classList.remove("hidden");
 
+        let batchStorageMode = null;
         batchDownloadAllBtn.onclick = async () => {
           if (batchModalOverlay.classList.contains("hidden")) return;
+          const batchPhotoMode =
+            localStorage.getItem("mori_batch_photo_mode") || "all";
+          const hasImageDownloads = batchResults.some(item =>
+            (item.data?.result?.downloads || []).some(download =>
+              /image|photo|jpg|jpeg|png|webp|gif|avif/i.test(download?.type || "") ||
+              /\.(?:jpg|jpeg|png|webp|gif|avif)(?:$|[?#])/i.test(download?.url || "")));
+          if (batchPhotoMode !== "pdf" && hasImageDownloads) {
+            batchStorageMode = await chooseDownloadDestination({ scope: "batch" });
+            if (!batchStorageMode) return;
+          }
           batchDownloadAllBtn.disabled = true;
 
           const progressState = new Map();
@@ -274,8 +286,6 @@ downloadBtn.addEventListener("click", async () => {
             setItemProgress(state.idx, overall);
           };
           window.addEventListener("mori_download_progress", onBatchProgress);
-          const batchPhotoMode =
-            localStorage.getItem("mori_batch_photo_mode") || "all";
           const concurrentLimit = parseInt(
             localStorage.getItem("mori_concurrent") || "1",
             10,
@@ -363,6 +373,7 @@ downloadBtn.addEventListener("click", async () => {
                   item.url,
                   false, // don't reset cancel flag
                   primaryVideo.fallbackUrls || [],
+                  { storageMode: batchStorageMode },
                 );
               } else {
                 if (batchPhotoMode === "first") {
@@ -382,6 +393,8 @@ downloadBtn.addEventListener("click", async () => {
                     null,
                     item.url,
                     false,
+                    [],
+                    { storageMode: batchStorageMode },
                   );
                 } else if (batchPhotoMode === "pdf") {
                   progress.totalUnits = 1;
@@ -469,6 +482,8 @@ downloadBtn.addEventListener("click", async () => {
                           null,
                           item.url,
                           false,
+                          [],
+                          { storageMode: batchStorageMode },
                         );
                       }
                     }
@@ -488,6 +503,8 @@ downloadBtn.addEventListener("click", async () => {
                       null,
                       item.url,
                       false,
+                      [],
+                      { storageMode: batchStorageMode },
                     );
                   }
                 } else {
@@ -514,6 +531,8 @@ downloadBtn.addEventListener("click", async () => {
                       null,
                       item.url,
                       false,
+                      [],
+                      { storageMode: batchStorageMode },
                     );
                   }
                 }

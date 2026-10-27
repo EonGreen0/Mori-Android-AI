@@ -44,7 +44,7 @@ export async function saveToStorage({
   checkCancelled,
 }) {
   let savedFile = null;
-  let successfulDir = "EXTERNAL_STORAGE";
+  let successfulDir = directoriesToTry[0] || "EXTERNAL_STORAGE";
   let attempts = 0;
 
   const isAutoRetry = localStorage.getItem("mori_auto_retry") !== "false";

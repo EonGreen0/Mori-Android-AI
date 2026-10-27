@@ -1,10 +1,10 @@
 {
   "name": "mori",
-  "version": "4.9.5",
+  "version": "4.9.6",
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "node scripts/test-sync.mjs && node scripts/test-browser.mjs && node scripts/verify-album-sync.mjs && node scripts/verify-gallery-import.mjs && node scripts/verify-album-edit.mjs && node scripts/verify-link-album-assignment.mjs && node scripts/verify-ai-organizer.mjs && node scripts/verify-android-local-planner.mjs && node scripts/verify-rednote-scraper.mjs",
+    "test": "node scripts/test-sync.mjs && node scripts/test-browser.mjs && node scripts/verify-album-sync.mjs && node scripts/verify-gallery-import.mjs && node scripts/verify-album-edit.mjs && node scripts/verify-link-album-assignment.mjs && node scripts/verify-ai-organizer.mjs && node scripts/verify-android-local-planner.mjs && node scripts/verify-download-cache-and-link-delete.mjs && node scripts/verify-rednote-scraper.mjs",
     "test:albums": "node scripts/verify-album-sync.mjs",
     "start": "node scripts/dev-server.mjs",
     "tauri": "tauri",
